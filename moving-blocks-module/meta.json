@@ -1,0 +1,19 @@
+{
+  "module_id": "hackathons:moving-blocks",
+  "visibility": "private",
+  "description": "RGB-D object transfer between two blue-tape work zones using Viam camera, frame transforms, and collision-aware motion planning. Preview is read-only; movement requires two explicit opt-ins.",
+  "models": [
+    {
+      "api": "rdk:service:generic",
+      "model": "hackathons:moving-blocks:transfer",
+      "markdown_description": "Generic service. DoCommand `{'action':'preview'}` analyzes two blue-tape zones without motion. `{'action':'move','confirm':true}` performs pick-and-place only when the machine config also has `enable_motion: true`. Requires arm, aligned RGB-D camera, gripper, and builtin motion dependencies."
+    }
+  ],
+  "entrypoint": "run.sh",
+  "build": {
+    "setup": "./setup.sh",
+    "build": "./build.sh",
+    "path": "dist/archive.tar.gz",
+    "arch": ["linux/amd64", "linux/arm64"]
+  }
+}
