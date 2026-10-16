@@ -73,7 +73,11 @@ def describe(scene, assignment: dict[str, int]) -> str:
     if not objs:
         return "the square is empty"
     names = ", ".join(o.color_name if o.color_name in assignment else f"{o.color_name} (not sorted)" for o in objs)
-    return f"{len(objs)} block(s) in the square: {names}"
+    hint = ""
+    if all(o.color_name == "unknown" for o in objs):
+        hint = ("  <- every color unknown: the parser is reading color beside the blocks. Is the wrist "
+                "camera's depth aligned to color (\"align_color_depth\": true on cam)?")
+    return f"{len(objs)} block(s) in the square: {names}{hint}"
 
 
 def draw(scene, path: Path) -> None:
@@ -144,7 +148,8 @@ class Bench:
             print(f"\n{color} -> drawer {k}")
 
             n, t0 = n + 1, time.time()
-            reply = dict(await self.drawers.do_command({"action": "open", "drawer": k}))
+            reply = dict(await self.drawers.do_command({"action": "open", "drawer": k,
+                                                         "refine": not self.args.quick_knobs}))
             ok = bool(reply.get("success"))
             print(f"  open {k}: {'ok' if ok else reply.get('error') or reply.get('stage')}")
             log_step(logger, n, "open", ok, t0, reply, drawer=k, note=str(reply.get("error", "")))
@@ -180,6 +185,9 @@ async def main() -> None:
     p.add_argument("--drawer-service", default="PickBottle")
     p.add_argument("--drop-extra-mm", type=float, default=0.0,
                    help="raise the drop target above the knob height (release is 120 mm above the target)")
+    p.add_argument("--quick-knobs", action="store_true",
+                   help="use the drawer service's stored camera correction instead of the self-correcting "
+                        "two-look knob refinement (faster, but only valid for the camera it was measured with)")
     p.add_argument("--yes", action="store_true", help="skip the motion confirmation")
     args = p.parse_args()
 
