@@ -760,10 +760,10 @@ class MyGenericService(Generic, EasyResource):
         return {"success": True, "drawer": drawer, **log}
 
     async def all_drawers(self, order: Sequence[int] = (1, 2, 3)) -> Dict[str, Any]:
-        """Open and close every drawer in turn with no new looks in between.
-        The first knob gets the full overhead look + close-up correction. After each drawer is
-        closed, the knob's real position (where the fingers are holding it) gives the correction for
-        the other knobs: each keeps its spacing from that knob as measured in the overhead look."""
+        """Open and close every drawer in turn, with a fresh overhead look before each one.
+        Closing a drawer can push the box back 1-2 cm, so a knob position from an earlier look is
+        stale (that's why drawer 2 used to miss). Each drawer's log has "box_moved_mm" against the
+        first look."""
         out: Dict[str, Any] = {"order": list(order), "drawers": []}
         first = order[0]
         prep = await self._prepare(first, out)
@@ -787,22 +787,27 @@ class MyGenericService(Generic, EasyResource):
                     "error": f"drawer(s) {sorted(far)} are {far} mm from the robot base; the arm reaches about "
                              f"{MAX_REACH_MM:.0f} mm. Move the box about {(worst - MAX_REACH_MM) / 10 + 2:.0f} cm "
                              "closer to the robot and run again - nothing was touched.", **out}
-        anchor_d, anchor_xy = first, [ref["x"], ref["y"]]
-        from_hover = False
-        for d in order:
-            # this knob = the latest known knob + its overhead spacing from that knob
-            est = [anchor_xy[0] + overhead[d][0] - overhead[anchor_d][0],
-                   anchor_xy[1] + overhead[d][1] - overhead[anchor_d][1]]
-            log: Dict[str, Any] = {"drawer": d, "knob_used": [round(est[0], 1), round(est[1], 1)],
-                                   "from": f"drawer {anchor_d} " + ("close-up" if anchor_d == first and d == first
-                                                                    else "final position")}
-            res = await self._operate(est, pull, wrist, wrist_alt, log, from_hover=from_hover)
+        for i, d in enumerate(order):
+            log: Dict[str, Any] = {"drawer": d}
+            if i > 0:
+                # Closing a drawer can shove the whole box a centimetre or two, so look again before
+                # every drawer instead of reusing the first look (the "final position" of the previous
+                # knob is only the commanded grasp point, so it can't see the box move).
+                prep = await self._prepare(d, log)
+                if prep is None:
+                    out["drawers"].append(log)
+                    return {"success": False, "stopped_at_drawer": d, "stage": log.get("stage"),
+                            "error": log.get("error"), **out}
+                fk, ref, wrist, wrist_alt = prep
+                pull = fk["open_dir"]
+                log["box_moved_mm"] = round(math.hypot(fk["mid"][0] - out["find"]["mid"][0],
+                                                       fk["mid"][1] - out["find"]["mid"][1]), 1)
+            log["knob_used"] = [round(ref["x"], 1), round(ref["y"], 1)]
+            res = await self._operate([ref["x"], ref["y"]], pull, wrist, wrist_alt, log)
             out["drawers"].append(log)
             if not res["ok"]:
                 return {"success": False, "stopped_at_drawer": d, "stage": res.get("stage"),
                         "error": res.get("error"), **out}
-            anchor_d, anchor_xy = d, res["final_knob"]
-            from_hover = True
         return {"success": True, **out}
 
     async def release(self) -> Dict[str, Any]:
