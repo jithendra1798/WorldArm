@@ -3,7 +3,8 @@ import os
 from dotenv import load_dotenv
 from viam.robot.client import RobotClient
 
-load_dotenv()
+# Each arm has its own env file; pick one with WORLDARM_ENV=.env.arm2 (default: .env)
+load_dotenv(os.getenv("WORLDARM_ENV", ".env"))
 
 
 def env(name: str) -> str:
