@@ -352,43 +352,59 @@ async def capture_scene(machine, camera: Camera, camera_name: str) -> Scene:
     return scene
 
 
-def drop_slot_pixels(zone: Zone, objects: list[DetectedObject]) -> list[tuple[int, int]]:
+def drop_slot_pixels(
+    zone: Zone,
+    objects: list[DetectedObject],
+    prefer_toward: tuple[int, int] | None = None,
+) -> list[tuple[int, int]]:
+    """Compact drop grid, biased toward the source so later slots stay reachable."""
     rect = cv2.minAreaRect(zone.corners)
     (cx, cy), (rw, rh), angle = rect
     if rw < rh:
         rw, rh = rh, rw
         angle += 90.0
-    inset = setting("VIAM_DROP_SLOT_INSET_PX", 12.0)
-    gap = setting("VIAM_DROP_SLOT_GAP_PX", 8.0)
-    sizes = []
-    for obj in objects:
-        _, _, w, h = obj.bbox
-        major, minor = max(w, h), min(w, h)
-        # A tall/slender silhouette (e.g. upright cylinder) includes height in
-        # its image box; use its area-equivalent diameter for planar spacing.
-        footprint_px = math.sqrt(obj.area_px) if minor / max(major, 1) < 0.55 else major
-        sizes.append(max(20.0, footprint_px))
-    required_span = sum(sizes) + gap * max(0, len(sizes) - 1)
-    if required_span > rw - 2 * inset:
+    inset = setting("VIAM_DROP_SLOT_INSET_PX", 28.0)
+    gap = setting("VIAM_DROP_SLOT_GAP_PX", 36.0)
+    n = len(objects)
+    cols = 2 if n >= 3 else max(1, n)
+    rows = int(math.ceil(n / cols))
+    cell = max(28.0, gap + max(math.sqrt(obj.area_px) for obj in objects))
+    grid_w = (cols - 1) * cell
+    grid_h = (rows - 1) * cell
+    if grid_w > rw - 2 * inset or grid_h > rh - 2 * inset:
         raise RuntimeError(
-            f"Destination box is too narrow for {len(objects)} separated drop positions "
-            "at conservative spacing. Enlarge/clear the destination area and preview again."
+            f"Destination box is too small for {n} separated drop positions. "
+            "Clear or enlarge the destination square and preview again."
         )
+
+    # Bias the whole grid toward the source zone so the far edge is unused.
+    ox, oy = 0.0, 0.0
+    if prefer_toward is not None:
+        px, py = prefer_toward
+        theta = math.radians(angle)
+        cos_a, sin_a = math.cos(theta), math.sin(theta)
+        # Source offset in the destination box's local frame.
+        dx = (px - cx) * cos_a + (py - cy) * sin_a
+        dy = -(px - cx) * sin_a + (py - cy) * cos_a
+        max_ox = max(0.0, (rw - 2 * inset - grid_w) / 2)
+        max_oy = max(0.0, (rh - 2 * inset - grid_h) / 2)
+        ox = max(-max_ox, min(max_ox, 0.55 * dx))
+        oy = max(-max_oy, min(max_oy, 0.55 * dy))
+
     theta = math.radians(angle)
     cos_a, sin_a = math.cos(theta), math.sin(theta)
-    points: list[tuple[int, int]] = []
     contour = zone.corners.reshape(-1, 1, 2)
-    cursor = -required_span / 2
-    for size in sizes:
-        dx = cursor + size / 2
-        dy = 0.0
-        u = int(round(cx + dx * cos_a - dy * sin_a))
-        v = int(round(cy + dx * sin_a + dy * cos_a))
-        clearance = cv2.pointPolygonTest(contour, (float(u), float(v)), True)
-        if clearance < size / 2 + inset:
+    points: list[tuple[int, int]] = []
+    for idx in range(n):
+        row, col = divmod(idx, cols) if cols > 1 else (0, idx)
+        # Fill row-major starting at the near corner of the compact grid.
+        local_x = ox - grid_w / 2 + col * cell
+        local_y = oy - grid_h / 2 + row * cell
+        u = int(round(cx + local_x * cos_a - local_y * sin_a))
+        v = int(round(cy + local_x * sin_a + local_y * cos_a))
+        if cv2.pointPolygonTest(contour, (float(u), float(v)), True) < inset:
             raise RuntimeError("A planned drop position is too close to the tape boundary.")
         points.append((u, v))
-        cursor += size + gap
     return points
 
 
@@ -419,6 +435,41 @@ def surface_down_orientation(surface: Pose) -> dict[str, float]:
     return {"o_x": ox, "o_y": oy, "o_z": oz, "theta": float(surface.theta)}
 
 
+async def move_to_place_approach(
+    motion: MotionClient,
+    gripper_name: str,
+    destination: Pose,
+    orientation: dict[str, float],
+    place_approach_z: float,
+    world_state,
+    table_margin: float,
+    timeout: float,
+) -> Pose:
+    """Travel above the drop; raise or nudge inward if a slot has no IK."""
+    candidates = [
+        place_approach_z,
+        place_approach_z + 40.0,
+        place_approach_z + 80.0,
+        place_approach_z + 120.0,
+    ]
+    last_error: Exception | None = None
+    for height in candidates:
+        for dx, dy in ((0.0, 0.0), (-30.0, 0.0), (0.0, -30.0), (30.0, 0.0), (0.0, 30.0)):
+            target = make_pose(destination.x + dx, destination.y + dy, height, orientation)
+            try:
+                await move_gripper(
+                    motion, gripper_name, target, world_state, linear=False,
+                    timeout=timeout, label="travel above destination zone",
+                    table_margin_mm=table_margin,
+                )
+                return target
+            except Exception as exc:  # noqa: BLE001 — try the next reachable hover pose
+                last_error = exc
+                continue
+    assert last_error is not None
+    raise last_error
+
+
 async def move_one_object(
     obj: DetectedObject,
     destination: Pose,
@@ -437,9 +488,7 @@ async def move_one_object(
         "o_z": cfg["VIAM_GRASP_OZ"],
         "theta": cfg["VIAM_GRASP_THETA_DEG"],
     }
-    # Keep the same TCP orientation for pick and place. The destination surface
-    # transform carries camera yaw (theta≈90°) which makes IK report unreachable
-    # even when the XYZ is inside the arm's workspace.
+    # Same TCP orientation for pick and place — camera surface yaw breaks IK.
     grasp_z = compute_grasp_tcp_z(
         obj.center_world.z,
         offset_above_detection_mm=cfg["VIAM_GRASP_TCP_Z_OFFSET_MM"],
@@ -450,33 +499,25 @@ async def move_one_object(
     pregrasp = make_pose(obj.center_world.x, obj.center_world.y, grasp_z + clearance, orientation)
     grasp = make_pose(obj.center_world.x, obj.center_world.y, grasp_z, orientation)
     lift = make_pose(obj.center_world.x, obj.center_world.y, grasp_z + cfg["VIAM_LIFT_MM"], orientation)
+    # Stay high enough that opening jaws clear neighboring placed objects.
     release_height = max(
-        table_margin,
-        setting("VIAM_PLACE_RELEASE_HEIGHT_MM", 100.0),
+        table_margin + 40.0,
+        setting("VIAM_PLACE_RELEASE_HEIGHT_MM", 120.0),
     )
     place_z = max(destination.z + release_height, floor)
     place = make_pose(destination.x, destination.y, place_z, orientation)
-    place_approach_z = max(place_z, destination.z + table_margin + clearance)
-    place_approach = make_pose(destination.x, destination.y, place_approach_z, orientation)
+    place_approach_z = max(place_z + 30.0, destination.z + table_margin + clearance)
 
     logger.info("Object at %s, estimated height %.1f mm", fmt_pose(obj.center_world), obj.height_mm)
     logger.info("Destination %s", fmt_pose(destination))
     logger.info("Grasp TCP %s; release TCP %s", fmt_pose(grasp), fmt_pose(place))
-    logger.info(
-        "Release height is %.1f mm above estimated destination surface; transit height %.1f mm.",
-        place.z - destination.z,
-        place_approach.z,
-    )
 
-    await with_timeout(gripper.open(), 30.0, "open gripper")
+    await with_timeout(gripper.open(), 20.0, "open gripper")
     await move_gripper(motion, gripper_name, pregrasp, world_state, linear=False,
                        timeout=timeout, label="pre-grasp", table_margin_mm=table_margin)
-    current_z = pregrasp.z
-    while current_z > grasp.z + 1e-3:
-        current_z = max(grasp.z, current_z - cfg["VIAM_DESCENT_STEP_MM"])
-        waypoint = make_pose(grasp.x, grasp.y, current_z, orientation)
-        await move_gripper(motion, gripper_name, waypoint, world_state, linear=True,
-                           timeout=timeout, label="grasp descent", table_margin_mm=table_margin)
+    # One linear descent — fewer motion stops than stepped waypoints.
+    await move_gripper(motion, gripper_name, grasp, world_state, linear=True,
+                       timeout=timeout, label="grasp descent", table_margin_mm=table_margin)
 
     from pick_red_cube import gentle_grab
     grip_speed = optional_int("VIAM_GRIPPER_SPEED", 0) or None
@@ -489,19 +530,23 @@ async def move_one_object(
 
     await move_gripper(motion, gripper_name, lift, world_state, linear=True,
                        timeout=timeout, label="lift object", table_margin_mm=table_margin)
-    await move_gripper(motion, gripper_name, place_approach, world_state, linear=False,
-                       timeout=timeout, label="travel above destination zone",
-                       table_margin_mm=table_margin)
-    await move_gripper(motion, gripper_name, place, world_state, linear=True,
+    hover = await move_to_place_approach(
+        motion, gripper_name, destination, orientation, place_approach_z,
+        world_state, table_margin, timeout,
+    )
+    place_above = make_pose(hover.x, hover.y, place_z, orientation)
+    await move_gripper(motion, gripper_name, place_above, world_state, linear=True,
                        timeout=timeout, label="lower into destination zone",
                        table_margin_mm=table_margin)
-    await with_timeout(gripper.open(), 30.0, "release object")
-    holding = await with_timeout(gripper.is_holding_something(), 10.0, "verify release")
-    if holding.is_holding_something:
-        raise RuntimeError("Gripper still reports an object after opening; stopping the sequence.")
-    await move_gripper(motion, gripper_name, place_approach, world_state, linear=True,
+    # Open high, then lift straight up before any sideways move so jaws don't
+    # shove already-placed cubes.
+    await with_timeout(gripper.open(), 20.0, "release object")
+    await move_gripper(motion, gripper_name, hover, world_state, linear=True,
                        timeout=timeout, label="retreat after release",
                        table_margin_mm=table_margin)
+    holding = await with_timeout(gripper.is_holding_something(), 5.0, "verify release")
+    if holding.is_holding_something:
+        raise RuntimeError("Gripper still reports an object after opening; stopping the sequence.")
 
 
 def save_view_pose(pose: Pose) -> None:
@@ -671,7 +716,9 @@ async def main() -> None:
                 idx, obj.color_name, obj.pixel, obj.bbox, obj.height_mm, fmt_pose(obj.center_world),
             )
 
-        slot_pixels = drop_slot_pixels(destination_zone, source.objects)
+        slot_pixels = drop_slot_pixels(
+            destination_zone, source.objects, prefer_toward=source.center_px,
+        )
         destinations: list[Pose] = []
         for idx, slot in enumerate(slot_pixels, 1):
             pose = await zone_surface_pose(machine, scene, camera_name, destination_zone, slot)
