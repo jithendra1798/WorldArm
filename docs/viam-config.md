@@ -96,6 +96,10 @@ Add the registry module **`devrel:arm-recorder`**, then this sensor component. I
 - Recordings replay **joint positions**, so they only work while the organizer stays exactly where it was taped. Making drawers work from any organizer position is the drawers track's job.
 - The first move of every playback goes to the recording's start pose. Test playback with the drawer already open, and with someone on the E-stop.
 
+## 4. Drawer service (inline module, armfarm03)
+
+Source: [`modules/drawer_service.py`](../modules/drawer_service.py). It's a Viam inline module (generic service), so paste it into the module's editor in the Viam app; it isn't imported by the `worldarm` package. It finds the 3-knob row from overhead, grips a knob, opens and closes the drawer 12 cm, and watches joint loads for contact on the way down. Attributes and DoCommands are listed at the top of the file.
+
 ## Manual mode: guiding the arm by hand
 
 1. **Someone stands at the E-stop.**
