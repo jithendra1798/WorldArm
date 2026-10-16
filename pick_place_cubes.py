@@ -437,7 +437,9 @@ async def move_one_object(
         "o_z": cfg["VIAM_GRASP_OZ"],
         "theta": cfg["VIAM_GRASP_THETA_DEG"],
     }
-    place_orientation = surface_down_orientation(destination)
+    # Keep the same TCP orientation for pick and place. The destination surface
+    # transform carries camera yaw (theta≈90°) which makes IK report unreachable
+    # even when the XYZ is inside the arm's workspace.
     grasp_z = compute_grasp_tcp_z(
         obj.center_world.z,
         offset_above_detection_mm=cfg["VIAM_GRASP_TCP_Z_OFFSET_MM"],
@@ -448,21 +450,14 @@ async def move_one_object(
     pregrasp = make_pose(obj.center_world.x, obj.center_world.y, grasp_z + clearance, orientation)
     grasp = make_pose(obj.center_world.x, obj.center_world.y, grasp_z, orientation)
     lift = make_pose(obj.center_world.x, obj.center_world.y, grasp_z + cfg["VIAM_LIFT_MM"], orientation)
-    # Use the destination surface's transformed yaw (the observed pose was
-    # theta≈82.3°). Forcing the grasp's theta=0 caused zero IK solutions at
-    # the far blue-tape zone despite valid XYZ estimates.
-    place_orientation_cfg = place_orientation
-    # The previous release pose was only 55 mm above the camera-estimated table
-    # surface and had no IK solution at the far destination. Keep the lower pose
-    # higher, while preserving the same (already reached) transit height.
     release_height = max(
         table_margin,
         setting("VIAM_PLACE_RELEASE_HEIGHT_MM", 100.0),
     )
     place_z = max(destination.z + release_height, floor)
-    place = make_pose(destination.x, destination.y, place_z, place_orientation_cfg)
+    place = make_pose(destination.x, destination.y, place_z, orientation)
     place_approach_z = max(place_z, destination.z + table_margin + clearance)
-    place_approach = make_pose(destination.x, destination.y, place_approach_z, place_orientation_cfg)
+    place_approach = make_pose(destination.x, destination.y, place_approach_z, orientation)
 
     logger.info("Object at %s, estimated height %.1f mm", fmt_pose(obj.center_world), obj.height_mm)
     logger.info("Destination %s", fmt_pose(destination))
@@ -680,8 +675,6 @@ async def main() -> None:
         destinations: list[Pose] = []
         for idx, slot in enumerate(slot_pixels, 1):
             pose = await zone_surface_pose(machine, scene, camera_name, destination_zone, slot)
-            # Fail before picking anything if the camera-derived drop frame is malformed.
-            surface_down_orientation(pose)
             assert_in_workspace(pose.x, pose.y, pose.z, workspace_bounds())
             destinations.append(pose)
             logger.info("Destination slot %d: pixel=%s world=%s", idx, slot, fmt_pose(pose))

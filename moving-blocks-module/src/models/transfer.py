@@ -452,11 +452,8 @@ async def move_one_object(obj: DetectedObject, destination: Pose, arm: Arm, grip
         "o_z": number(options, "grasp_oz", -1.0),
         "theta": number(options, "grasp_theta_deg", 0.0),
     }
-    place_orientation = surface_down_orientation(destination)
     def pose(x: float, y: float, z: float) -> Pose:
         return Pose(x=x, y=y, z=z, **orientation)
-    def place_pose(x: float, y: float, z: float) -> Pose:
-        return Pose(x=x, y=y, z=z, **place_orientation)
     grasp = pose(obj.center_world.x, obj.center_world.y,
                  grasp_z(obj.center_world.z, number(options, "grasp_tcp_z_offset_mm", 65), margin_mm))
     clearance = number(options, "approach_clearance_mm", 100.0)
@@ -464,11 +461,11 @@ async def move_one_object(obj: DetectedObject, destination: Pose, arm: Arm, grip
     pregrasp = pose(grasp.x, grasp.y, grasp.z + clearance)
     release_h = max(margin_mm, number(options, "place_release_height_mm", 100.0))
     place_z = max(destination.z + release_h, TABLE_TOP_Z_MM + margin_mm)
-    # Preserve the camera-derived surface yaw at the destination. A fixed grasp
-    # yaw (theta=0) caused the logged "zero IK solutions" on the far drop zone.
-    place = place_pose(destination.x, destination.y, place_z)
-    place_approach = place_pose(destination.x, destination.y,
-                                max(place_z, destination.z + margin_mm + clearance))
+    # Same TCP orientation as the pick. Camera-derived surface yaw (theta≈90°)
+    # is what made Move report zero IK solutions with reachable XYZ.
+    place = pose(destination.x, destination.y, place_z)
+    place_approach = pose(destination.x, destination.y,
+                          max(place_z, destination.z + margin_mm + clearance))
     logger.info("Grasping object at %s (height %.1f mm); dropping at %s",
                 fmt_pose(obj.center_world), obj.height_mm, fmt_pose(place))
 

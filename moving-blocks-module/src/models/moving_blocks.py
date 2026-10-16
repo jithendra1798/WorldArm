@@ -37,7 +37,6 @@ from models.transfer import (
     move_gripper,
     move_one_object,
     number,
-    surface_down_orientation,
     workspace_bounds,
     with_timeout,
     workcell_world_state,
@@ -193,8 +192,6 @@ class MovingBlocks(Generic, EasyResource):
             for slot in slots:
                 pose = await zone_surface_pose(self.motion, scene, self.camera_name,
                                                destination_zone, slot, self.options)
-                # Validate every drop orientation before the first object is picked.
-                surface_down_orientation(pose)
                 assert_in_workspace(pose.x, pose.y, pose.z, workspace_bounds(self.options))
                 destinations.append(pose)
             for idx, obj in enumerate(source.objects, 1):
