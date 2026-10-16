@@ -32,7 +32,7 @@ Team of 4, two arms. Demos are **Saturday at 3:30 PM**; feature freeze at 12:30.
 
 This is the guaranteed demo, so it comes before chapter 2.
 
-1. **Benchmark each skill as it is**, through its existing service command. 10 logged trials per skill, with success judged by a person:
+1. **Benchmark each skill as it is**, through its existing service command, with `bench_skill.py`. 10 logged trials per skill, with success judged by a person:
    - pick success per color;
    - drawer open to the 75% mark, and close;
    - dropping into an open drawer.

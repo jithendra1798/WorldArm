@@ -50,16 +50,19 @@ def scoreboard(runs: list[dict]) -> str:
     for r in runs:
         groups[group_key(r)].append(r)
     for key, rs in groups.items():
-        out.append(f"\n== {key}  ({len(rs)} episodes)")
         sums = [r["summary"] for r in rs]
-        judged = [s for s in sums if s.get("truth_success") is not None]
-        out.append(f"  success (truth)          {rate(sum(s['truth_success'] for s in judged), len(judged))}")
-        out.append(f"  done (robot believes)    {rate(sum(s['status'] == 'done' for s in sums), len(sums))}")
-        accs = [s["belief_accuracy"] for s in sums if s.get("belief_accuracy") is not None]
-        if accs:
-            out.append(f"  belief accuracy          mean {statistics.mean(accs):.0%} over {len(accs)} episodes")
-        durations = [s["duration_s"] for s in sums]
-        out.append(f"  episode time             median {statistics.median(durations):.1f} s")
+        if str(rs[0]["meta"].get("goal", "")).startswith("bench:"):  # skill benchmark: tries, not episodes
+            out.append(f"\n== {key}  ({len(rs)} benchmark runs)")
+        else:
+            out.append(f"\n== {key}  ({len(rs)} episodes)")
+            judged = [s for s in sums if s.get("truth_success") is not None]
+            out.append(f"  success (truth)          {rate(sum(s['truth_success'] for s in judged), len(judged))}")
+            out.append(f"  done (robot believes)    {rate(sum(s['status'] == 'done' for s in sums), len(sums))}")
+            accs = [s["belief_accuracy"] for s in sums if s.get("belief_accuracy") is not None]
+            if accs:
+                out.append(f"  belief accuracy          mean {statistics.mean(accs):.0%} over {len(accs)} episodes")
+            durations = [s["duration_s"] for s in sums]
+            out.append(f"  episode time             median {statistics.median(durations):.1f} s")
 
         attempts, verified, ok = Counter(), Counter(), Counter()
         surprise_keys, ignored_keys = Counter(), Counter()
