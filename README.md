@@ -71,13 +71,12 @@ API keys are in the Viam app: **hackathons org → Arm Farm → your machine →
 
 ## Scripts
 
-All scripts in this table are **read-only**: none of them move the arm.
-
 | Script | What it does |
 |---|---|
-| `check_connection.py` | Lists resources and reads the arm pose, a camera frame and the gripper state |
-| `inspect_scene.py` | Prints camera intrinsics and the frame system; saves color and depth images to `captures/` |
-| `verify_camera.py` | Calibration check: our pixel→world math vs. Viam's `transform_pose`, a table-plane fit (height, tilt, flatness) and the obstacle geometries |
+| `teach.py` | **Moves the gripper only, never the arm.** Use it in manual mode: open and grab the gripper, save named poses to `poses/<machine>.json`, save captures |
+| `check_connection.py` | Read-only. Lists resources and reads the arm pose, a camera frame and the gripper state |
+| `inspect_scene.py` | Read-only. Prints camera intrinsics and the frame system; saves color and depth images to `captures/` |
+| `verify_camera.py` | Read-only. Calibration check: our pixel→world math vs. Viam's `transform_pose`, a table-plane fit (height, tilt, flatness) and the obstacle geometries |
 
 Library modules:
 
