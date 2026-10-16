@@ -231,3 +231,4 @@ __marimo__/
 runs/
 # Viam's hackathon deck is marked confidential; keep it out of the repo
 *Viam Overview.pdf
+state/

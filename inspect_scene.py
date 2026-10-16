@@ -9,8 +9,8 @@ from viam.components.arm import Arm
 from viam.components.camera import Camera
 from viam.proto.common import Pose, PoseInFrame
 
-from connection import connect, env
-from perception import capture
+from worldarm.connection import connect, env
+from worldarm.perception import capture
 
 OUT = Path("captures")
 

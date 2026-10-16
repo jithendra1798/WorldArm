@@ -24,8 +24,8 @@ from viam.components.camera import Camera
 from viam.components.gripper import Gripper
 from viam.proto.common import Pose, PoseInFrame
 
-from connection import connect, env
-from perception import capture
+from worldarm.connection import connect, env
+from worldarm.perception import capture
 
 POSES_DIR = Path("poses")
 CAPTURES_DIR = Path("captures")

@@ -30,7 +30,7 @@ The plan, roles and how we'll measure results are in **[PLAN.md](PLAN.md)**. The
                                          pick · place · open · close
 ```
 
-- **Perception:** find blocks by their height above the fitted table plane, classify color, and estimate position and angle in the world frame. Locate drawer handles from about 30 cm away (depth fails closer than that).
+- **Perception:** v0 uses Viam's shape-finder and `detections-to-segments` services (squares and rectangles only). Our own depth-based perception and knob detection are the perception track's job.
 - **World model:** an explicit belief state. Each action has a *predicted effect* (for example, after `place(yellow, drawer 1)` the yellow block is in drawer 1). After every action we observe and compare. Any mismatch is logged and triggers a replan.
 - **Skills:** pick, place, open drawer, close drawer. All motion goes through Viam's motion service, plus our own safety limits (see below).
 
@@ -49,7 +49,7 @@ The plan, roles and how we'll measure results are in **[PLAN.md](PLAN.md)**. The
 - **Someone watches the arm with a hand near the E-stop** whenever code moves it.
 - **Use the motion service, not direct moves.** `MoveToPosition` and `MoveToJointPositions` go *straight through* obstacles. Only `motion.move` plans around them.
 - **Viam's table obstacle is wrong on armfarm03.** Its top is at world z = −23 mm, but the camera measures the real surface at **z ≈ +2 mm**. The planner would let the claws go about 25 mm into the table. Our code has to enforce its own minimum height. Measure each arm with `verify_camera.py`.
-- **The claws reach about 50 mm past the `gripper` frame** (configured claw geometry; confirm with a ruler). The gripper frame is 105 mm from the arm flange. Fingertip height ≈ gripper-frame z − 50 mm.
+- **The fingertips are about 60 mm past the `gripper` frame,** which is 105 mm from the arm flange. The 60 mm comes from Viam's pick-and-place workshop; the configured claw geometry says about 50 mm. Our code uses 60 (`WORLDARM_FINGERTIP_MM`). Confirm with a ruler.
 - **`wall-front` occupies x = 690–790 mm.** Keep targets well short of it.
 - **Test every new motion high first:** about 100 mm above the target, then lower it.
 - The RealSense **can't measure depth closer than about 26 cm**. Perceive from a viewing pose, then move in without the camera.
@@ -60,9 +60,11 @@ Python 3.13. From the repo root:
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
+python -m pytest            # 24 tests, no arm needed
+python run_episode.py --fake   # a full simulated episode
 cp .env.example .env        # fill in VIAM_API_KEY and VIAM_API_KEY_ID
-python check_connection.py  # read-only smoke test
+python check_connection.py  # read-only smoke test against the real machine
 ```
 
 API keys are in the Viam app: **hackathons org → Arm Farm → your machine → CONNECT → API keys**. Never commit a filled-in env file (`.gitignore` already excludes them).
@@ -73,18 +75,27 @@ API keys are in the Viam app: **hackathons org → Arm Farm → your machine →
 
 | Script | What it does |
 |---|---|
+| `run_episode.py` | One full logged episode. `--fake`: simulated robot. `--dry-run`: real detections, simulated actions, no motion. No flag: **moves the real arm** (asks first). See `--help`. |
+| `scoreboard.py` | Success rates with 95% intervals, per-action results and surprise counts over everything in `runs/` |
 | `teach.py` | **Moves the gripper only, never the arm.** Use it in manual mode: open and grab the gripper, save named poses to `poses/<machine>.json`, save captures |
 | `check_connection.py` | Read-only. Lists resources and reads the arm pose, a camera frame and the gripper state |
 | `inspect_scene.py` | Read-only. Prints camera intrinsics and the frame system; saves color and depth images to `captures/` |
 | `verify_camera.py` | Read-only. Calibration check: our pixel→world math vs. Viam's `transform_pose`, a table-plane fit (height, tilt, flatness) and the obstacle geometries |
 
-Library modules:
+The `worldarm/` package:
 
 | Module | What's in it |
 |---|---|
-| `connection.py` | `connect()` and `env()`; loads `.env` or the file named by `$WORLDARM_ENV` |
-| `perception.py` | Decodes Viam color and depth images; `capture()`, `deproject()`, `pixel_to_cam()` |
-| `frames.py` | `frame_to_world()`: camera→world rotation and translation built from Viam's own frame system; `to_world()` |
+| `schema.py` | Shared vocabulary: locations, `Action`, `Observation` (fact keys), `Surprise` |
+| `world_model.py` | `Belief`; `predict`, `preconditions`, `update` (correct → predict → correct) |
+| `planner.py` | `Goal` (`sort`, `find:<color>`); `next_action`; `satisfied` |
+| `episode.py` | The plan → predict → act → observe → correct loop, including the `--blind` ablation |
+| `sim.py` | `FakeRobot`: true world, seeded failure injection, hidden-hand moves |
+| `robot.py` | `ViamRobot`: v0 skills built on reused Viam services. **Not yet validated on hardware.** |
+| `safety.py` | Our own floor and workspace check before every computed move |
+| `config.py` | Resource names and limits from the env file |
+| `logger.py`, `metrics.py` | `runs/` logs (with git commit) and the scoreboard |
+| `connection.py`, `perception.py`, `frames.py` | Connection, image decoding and back-projection, camera→world transform |
 
 ## Calibration measured on armfarm03 (2026-10-16)
 

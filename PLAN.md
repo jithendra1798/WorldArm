@@ -6,7 +6,7 @@ Team of 4, two arms. Demos are **Saturday at 3:30 PM**. Doors close at 9 PM on F
 
 1. **Reuse first.** Low-level pieces already exist (drivers, saved poses, block detection, pick and place, trajectory record and replay). We configure them; we don't rewrite them.
 2. **Skeleton (Jithendra, until about 4 PM Friday).** A thin layer of our code connects those pieces into one full, logged episode on a real arm: `python run_episode.py`. `--dry-run` plans without moving; `--fake` uses a simulated robot.
-3. **Improvement tracks (everyone, from about 4 PM Friday).** Each person owns one stage of the running system. Each stage has a score computed from the episode logs, a starting number from the skeleton, and a target. Every improvement shows up in the team's end-to-end success rate. `python metrics.py` prints the scoreboard.
+3. **Improvement tracks (everyone, from about 4 PM Friday).** Each person owns one stage of the running system. Each stage has a score computed from the episode logs, a starting number from the skeleton, and a target. Every improvement shows up in the team's end-to-end success rate. `python scoreboard.py` prints the scoreboard.
 
 ## Reuse first: what we take, what we build
 
@@ -47,22 +47,28 @@ Configuration for the reused pieces: **[docs/viam-config.md](docs/viam-config.md
 
 ## Phase 1: the skeleton
 
-Our code is a thin layer over the services above:
+**Status (Fri 1:00 PM):**
+- The skeleton runs end to end in simulation. `python run_episode.py --fake` runs an episode, and the 24 tests pass.
+- The real backend (`worldarm/robot.py`) is written but **not yet validated on hardware**. It needs the services in docs/viam-config.md first; `--dry-run` reports any that are missing.
+
+Our code is a thin layer over the reused services (module descriptions are in the README):
 
 ```
-worldarm/
-  config.py       machine env, service and switch names, safety limits
-  safety.py       our own table floor + workspace box, checked before every motion.move
-  robot.py        connect; go_to(switch); move_to(pose) via motion + safety; gripper; play(recording)
-  observe.py      observation model: blocks via vision-segment; drawer open/contents via depth
-  world_model.py  belief state; predict(action) → expected; update(observation) → surprises
-  planner.py      next action for the goal (sort everything / retrieve one color)
-  skills.py       look, pick, place, open_drawer, close_drawer (each returns what it observed)
-  logger.py       runs/<timestamp>/episode.jsonl + before/after images
-run_episode.py    one full episode   (--dry-run, --fake, --goal sort | retrieve:blue)
-metrics.py        scoreboard from runs/
-teach.py          manual-mode helper: gripper open/grab, pose readout, captures
+worldarm/  schema · world_model · planner · episode · sim · robot · safety · config · logger · metrics
+run_episode.py   one full episode: --fake | --dry-run | real;  --goal sort | find:<color>;  --blind
+scoreboard.py    success rates with 95% intervals, per-action results, surprise counts
+teach.py         manual-mode helper: gripper open/grab, pose readout, captures
 ```
+
+**First simulated result (H1).** 100 seeds, every skill failing 15% of the time, scored on whether the blocks truly ended up sorted:
+
+| Checks after each action | Truth success | 95% interval |
+|---|---|---|
+| Full: drawer contents and drawer state | 99% | 95–100% |
+| Real v0: gripper sensor and table only | 51% | 41–61% |
+| None (`--blind`) | 38% | 29–48% |
+
+These failure rates are assumptions, and the simulated checks never make mistakes. What it does show is where checking helps most: **looking into the drawer** is the observation the real robot doesn't have yet. That's the world-model and perception tracks' first target.
 
 **Version 0 of each stage:**
 
@@ -99,28 +105,28 @@ teach.py          manual-mode helper: gripper open/grab, pose readout, captures
 
 ## Interfaces
 
+Defined in `worldarm/schema.py`. A robot (real or simulated) implements one method:
+
 ```python
-@dataclass
-class BlockObs:          # observe → world model
-    color: str           # "blue" | "yellow" | "green"  (no red: the knobs are red)
-    xyz_mm: np.ndarray   # world frame, center of the block
-    size_mm: tuple[float, float, float]
-    confidence: float
+async def execute(action: Action) -> Observation
+# Action: observe_table | open(k) | close(k) | pick(color) | place(k)     (drawer 1 = top)
 
 @dataclass
-class DrawerObs:
-    index: int           # 1 = top
-    open_mm: float       # measured travel
-    visible_colors: list[str]  # only meaningful when open
+class Observation:
+    facts: dict       # measured AFTER the action; checked against the prediction
+    pre_facts: dict   # measured BEFORE it (e.g. table detections at pick time); checked against the prior
+    detail: dict      # anything else worth logging
 
-# skills: each returns what was observed, never just True/False
-pick(block: BlockObs) -> PickResult            # holding: bool
-place(container: int) -> PlaceResult
-open_drawer(index: int) -> DrawerObs
-close_drawer(index: int) -> DrawerObs
+# fact keys
+holding          -> color | None
+drawer_open:<k>  -> bool
+contents:<k>     -> [colors seen in open drawer k]
+on_table         -> [colors seen on the table]
 ```
 
-For a bin (Arm B), `open_drawer` and `close_drawer` do nothing, so the same planner runs on both arms.
+**A fact you don't measure, you leave out.** It can't cause a false surprise, and the scoreboard counts that step as "unverified". Adding a new measurement means adding a fact key: for example, `contents:<k>` from a look into the open drawer. The world model needs no other change.
+
+For a bin (Arm B), `open` and `close` do nothing, so the same planner runs on both arms.
 
 ## Organizer and blocks
 

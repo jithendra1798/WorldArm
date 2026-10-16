@@ -83,7 +83,7 @@ Add the registry module **`devrel:arm-recorder`**, then this sensor component. I
 |---|---|---|---|
 | `grasp-k` | At `knob-k-pre`, gripper open | Straight forward until the fingers surround the knob's **stem** | Fingers around the stem (don't grab yet) |
 | `pull-k` | Fingers closed on the stem (`teach.py` → `g`) | Straight back, 50–60% of the drawer's depth | Drawer open; then `o` to release |
-| `push-k` | Gripper closed, touching the open drawer's front | Straight forward until the drawer is flush | Drawer closed |
+| `push-k` | At `drop-k` (above the open drawer), gripper closed | Out past the drawer front, down to knob height, then straight in until the drawer is flush | Drawer closed |
 
 ```json
 {"command": "start_recording", "session": "pull-1"}
