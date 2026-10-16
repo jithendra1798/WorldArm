@@ -31,7 +31,7 @@ The plan, roles and how we'll measure results are in **[PLAN.md](PLAN.md)**.
 ```
 
 - **Perception:** find blocks by their height above the fitted table plane, classify color, and estimate position and angle in the world frame. Locate drawer handles from about 30 cm away (depth fails closer than that).
-- **World model:** an explicit belief state. Each action has a *predicted effect* (for example, after `place(red, drawer 1)` the red block is in drawer 1). After every action we observe and compare. Any mismatch is logged and triggers a replan.
+- **World model:** an explicit belief state. Each action has a *predicted effect* (for example, after `place(yellow, drawer 1)` the yellow block is in drawer 1). After every action we observe and compare. Any mismatch is logged and triggers a replan.
 - **Skills:** pick, place, open drawer, close drawer. All motion goes through Viam's motion service, plus our own safety limits (see below).
 
 ## Hardware (per arm)
