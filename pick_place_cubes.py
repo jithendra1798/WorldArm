@@ -166,10 +166,14 @@ def build_zones(color: np.ndarray, depth: np.ndarray) -> tuple[np.ndarray, list[
     mask = blue_tape_mask(color)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     min_area = setting("VIAM_MIN_TAPE_ZONE_AREA_PX", 5000.0)
-    zones: list[Zone] = []
+    # Broken/partial tape outlines (objects on the border) drop rectangularity
+    # well below a filled contour; keep a soft floor and rank by size instead.
+    min_rectangularity = setting("VIAM_MIN_ZONE_RECTANGULARITY", 0.30)
+    bottom_reject_frac = setting("VIAM_TAPE_BOTTOM_REJECT_FRAC", 0.82)
+    candidates: list[tuple[float, np.ndarray, tuple[int, int], tuple[float, float, float], float]] = []
     for contour in contours:
         rect = cv2.minAreaRect(contour)
-        (_, _), (rw, rh), _ = rect
+        (cx, cy), (rw, rh), _ = rect
         if min(rw, rh) < 40:
             continue
         box_area = rw * rh
@@ -178,21 +182,21 @@ def build_zones(color: np.ndarray, depth: np.ndarray) -> tuple[np.ndarray, list[
         ratio = max(rw, rh) / min(rw, rh)
         if ratio > setting("VIAM_MAX_ZONE_ASPECT_RATIO", 2.5):
             continue
-        # Measure blue pixels within the candidate box, rather than requiring a
-        # filled-blue square: these are tape outlines around ordinary white table.
+        # Ignore the blue smear along the bottom of the camera frame.
+        if cy > mask.shape[0] * bottom_reject_frac:
+            logger.info("Ignoring bottom-frame blue smear at (%.0f, %.0f).", cx, cy)
+            continue
         polygon = np.rint(cv2.boxPoints(rect)).astype(np.int32)
         box_mask = np.zeros(mask.shape, dtype=np.uint8)
         cv2.fillConvexPoly(box_mask, polygon, 255)
         tape_coverage = cv2.countNonZero(cv2.bitwise_and(mask, box_mask)) / max(1.0, box_area)
         if tape_coverage < setting("VIAM_MIN_TAPE_COVERAGE", 0.025):
             continue
-        # A closed tape square's outer contour fills its box. The extra blue
-        # region along the bottom of the frame is a smear, not a rectangle.
         rectangularity = abs(cv2.contourArea(contour)) / max(1.0, box_area)
-        if rectangularity < setting("VIAM_MIN_ZONE_RECTANGULARITY", 0.7):
+        if rectangularity < min_rectangularity:
             logger.info(
-                "Ignoring non-rectangular blue region at (%.0f, %.0f), rectangularity %.2f.",
-                rect[0][0], rect[0][1], rectangularity,
+                "Ignoring weak blue region at (%.0f, %.0f), rectangularity %.2f.",
+                cx, cy, rectangularity,
             )
             continue
 
@@ -204,17 +208,39 @@ def build_zones(color: np.ndarray, depth: np.ndarray) -> tuple[np.ndarray, list[
                 interior,
                 cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * inset + 1, 2 * inset + 1)),
             )
+        try:
+            plane, depth_noise_mm = fit_table_depth_plane(depth, color, interior)
+        except RuntimeError as exc:
+            logger.info("Skipping blue region at (%.0f, %.0f): %s", cx, cy, exc)
+            continue
         center_px = contour_center(cv2.convexHull(polygon))
-        plane, depth_noise_mm = fit_table_depth_plane(depth, color, interior)
-        zones.append(Zone(polygon, interior, center_px, plane, depth_noise_mm, []))
+        # Prefer large tape boxes; rectangularity is only a soft preference.
+        score = box_area * (0.35 + rectangularity) * (0.5 + tape_coverage)
+        candidates.append((score, polygon, center_px, plane, depth_noise_mm))
 
-    # Blue tape from other objects/background must not be guessed as a work zone.
-    if len(zones) != 2:
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    chosen: list[Zone] = []
+    for score, polygon, center_px, plane, depth_noise_mm in candidates:
+        if any(math.hypot(center_px[0] - z.center_px[0], center_px[1] - z.center_px[1]) < 120 for z in chosen):
+            continue
+        interior = np.zeros(mask.shape, dtype=np.uint8)
+        cv2.fillConvexPoly(interior, polygon, 255)
+        inset = int(setting("VIAM_ZONE_INSET_PX", 12.0))
+        if inset > 0:
+            interior = cv2.erode(
+                interior,
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * inset + 1, 2 * inset + 1)),
+            )
+        chosen.append(Zone(polygon, interior, center_px, plane, depth_noise_mm, []))
+        if len(chosen) == 2:
+            break
+
+    if len(chosen) != 2:
         raise RuntimeError(
-            f"Expected exactly two blue-tape zones, detected {len(zones)}. "
+            f"Expected exactly two blue-tape zones, detected {len(chosen)}. "
             "Check the camera view/tape thresholds; refusing to move."
         )
-    return mask, zones
+    return mask, chosen
 
 
 def plane_depth_at(zone: Zone, u: int, v: int) -> float:

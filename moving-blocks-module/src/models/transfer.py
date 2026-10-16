@@ -165,14 +165,18 @@ def contour_center(contour: np.ndarray) -> tuple[int, int]:
 def build_zones(color: np.ndarray, depth: np.ndarray, options: Mapping[str, Any]) -> list[Zone]:
     mask = blue_tape_mask(color, options)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    zones: list[Zone] = []
     min_area = number(options, "min_tape_zone_area_px", 5000.0)
+    min_rectangularity = number(options, "min_zone_rectangularity", 0.30)
+    bottom_reject_frac = number(options, "tape_bottom_reject_frac", 0.82)
+    candidates: list[tuple[float, np.ndarray, tuple[int, int], tuple[float, float, float], float]] = []
     for contour in contours:
         rect = cv2.minAreaRect(contour)
-        (_, _), (rw, rh), _ = rect
+        (cx, cy), (rw, rh), _ = rect
         if min(rw, rh) < 40 or rw * rh < min_area:
             continue
         if max(rw, rh) / min(rw, rh) > number(options, "max_zone_aspect_ratio", 2.5):
+            continue
+        if cy > mask.shape[0] * bottom_reject_frac:
             continue
         polygon = np.rint(cv2.boxPoints(rect)).astype(np.int32)
         box_mask = np.zeros(mask.shape, dtype=np.uint8)
@@ -181,11 +185,7 @@ def build_zones(color: np.ndarray, depth: np.ndarray, options: Mapping[str, Any]
         if coverage < number(options, "min_tape_coverage", 0.025):
             continue
         rectangularity = abs(cv2.contourArea(contour)) / max(1.0, rw * rh)
-        if rectangularity < number(options, "min_zone_rectangularity", 0.7):
-            logger.info(
-                "Ignoring non-rectangular blue region at (%.0f, %.0f), rectangularity %.2f.",
-                rect[0][0], rect[0][1], rectangularity,
-            )
+        if rectangularity < min_rectangularity:
             continue
         interior = np.zeros(mask.shape, dtype=np.uint8)
         cv2.fillConvexPoly(interior, polygon, 255)
@@ -193,8 +193,27 @@ def build_zones(color: np.ndarray, depth: np.ndarray, options: Mapping[str, Any]
         if inset > 0:
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * inset + 1, 2 * inset + 1))
             interior = cv2.erode(interior, kernel)
-        plane, noise = fit_table_depth_plane(depth, color, interior, options)
-        zones.append(Zone(polygon, interior, contour_center(cv2.convexHull(polygon)), plane, noise, []))
+        try:
+            plane, noise = fit_table_depth_plane(depth, color, interior, options)
+        except RuntimeError:
+            continue
+        center = contour_center(cv2.convexHull(polygon))
+        score = (rw * rh) * (0.35 + rectangularity) * (0.5 + coverage)
+        candidates.append((score, polygon, center, plane, noise))
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    zones: list[Zone] = []
+    for score, polygon, center, plane, noise in candidates:
+        if any(math.hypot(center[0] - z.center_px[0], center[1] - z.center_px[1]) < 120 for z in zones):
+            continue
+        interior = np.zeros(mask.shape, dtype=np.uint8)
+        cv2.fillConvexPoly(interior, polygon, 255)
+        inset = int(number(options, "zone_inset_px", 12.0))
+        if inset > 0:
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * inset + 1, 2 * inset + 1))
+            interior = cv2.erode(interior, kernel)
+        zones.append(Zone(polygon, interior, center, plane, noise, []))
+        if len(zones) == 2:
+            break
     if len(zones) != 2:
         raise RuntimeError(f"Expected exactly two blue-tape work zones; detected {len(zones)}. Refusing to move.")
     return zones
