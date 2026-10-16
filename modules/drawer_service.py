@@ -15,6 +15,10 @@
 #   add "refine": true to any of these to use the slower two-look (180 deg) correction instead
 #   {"action": "find_knobs"}                    -> overhead look only: knob positions, open direction
 #   {"action": "release"}                       -> open the gripper to 3 cm and lift 6 cm
+#   {"action": "open", "drawer": 2}             -> open one drawer 12 cm and leave it open; returns a drop point
+#   {"action": "close", "drawer": 2}            -> close a drawer this service opened (no new look)
+#   {"action": "status"}                        -> which drawers this service has open; never moves
+#   {"action": "forget"}                        -> clear the remembered open drawers (after fixing by hand)
 
 import asyncio
 import json
@@ -59,6 +63,8 @@ GRIP_TORQUE_PCT = 25              # gentle grip
 GRIP_SPEED = 1500
 HOLD_MIN_POS, HOLD_MAX_POS = 150.0, 300.0   # holding the knob read 213-215
 TRAVEL_MM = 120.0                 # open / close distance
+KNOB_PROTRUSION_MM = 20.0         # knob centre in front of the drawer face (measure it; used for the drop point)
+DROP_FROM_FACE_MM = 70.0          # drop point: this far out from the organizer face, inside the open drawer
 RELEASE_POS = 300.0               # open to 3 cm to let go
 LIFT_MM = 60.0                    # lift after releasing
 SLOW_DEG_S = 10.0                 # speed near the box
@@ -166,6 +172,8 @@ class MyGenericService(Generic, EasyResource):
         self.knob_det = dependencies[VisionClient.get_resource_name(a.get("knob_detector", "knob-color"))]
         self.motion = dependencies[MotionClient.get_resource_name("builtin")]
         self.state_file = os.path.join(os.environ.get("VIAM_MODULE_DATA", "/tmp"), "drawer_last_look.json")
+        self.open_state_file = os.path.join(os.environ.get("VIAM_MODULE_DATA", "/tmp"), "drawer_open_state.json")
+        self.open_drawers = self._load_open_state()
         return self
 
     @classmethod
@@ -807,6 +815,137 @@ class MyGenericService(Generic, EasyResource):
         await self._speed(TRAVEL_DEG_S)
         return {"released": True}
 
+    # ---------------- open and close as separate steps ----------------
+    # For sorting: open a drawer, leave it open while a block is dropped in, then close it. Same
+    # moves and checks as drawer_run, split at the open position. Where the knob was left is
+    # remembered (also on disk), so `close` needs no new look.
+
+    def _load_open_state(self) -> Dict[int, Dict[str, Any]]:
+        try:
+            with open(self.open_state_file) as f:
+                return {int(k): v for k, v in json.load(f).items()}
+        except Exception:
+            return {}
+
+    def _save_open_state(self) -> None:
+        try:
+            with open(self.open_state_file, "w") as f:
+                json.dump({str(k): v for k, v in self.open_drawers.items()}, f)
+        except Exception as e:
+            self.logger.warning(f"could not save the open-drawer state: {e}")
+
+    async def _grip_at(self, gx, gy, wrists, log: Dict[str, Any]) -> Dict[str, Any]:
+        """Steps 1-3 of _operate: hover above the grasp point, watched descent, gentle grip and check."""
+        hz = DESCENT_Z_MM[0]
+        await self.gripper.do_command({"set": APPROACH_OPEN_POS})
+        await self._speed(TRAVEL_DEG_S)
+        used = None
+        for t in wrists:
+            try:
+                await self._gripper_to(gx, gy, hz, t, straight=False)
+                used = t
+                break
+            except Exception as e:
+                log.setdefault("hover_errors", []).append(str(e)[:120])
+        if used is None:
+            return {"ok": False, "stage": "hover"}
+        await self._speed(SLOW_DEG_S)
+        mon = await self._watched_move(gx, gy, GRASP_Z_MM, used)
+        log["descent"] = mon
+        if mon.get("contact"):
+            try:
+                await self.arm.do_command({"clear_error": True})
+            except Exception:
+                pass
+            await self._gripper_to(gx, gy, hz, used)
+            return {"ok": False, "stage": "descent", "error": f"contact felt near z={mon.get('z')} "
+                    f"(load off trend {mon.get('change')}x the limit) - stopped and backed off, nothing forced"}
+        await self.gripper.do_command({"grab_with_torque": {"position": 0, "speed": GRIP_SPEED,
+                                                            "torque": GRIP_TORQUE_PCT}})
+        await asyncio.sleep(SETTLE_S)
+        pos = await self._gpos()
+        log["grip_pos"] = pos
+        if pos is None or not (HOLD_MIN_POS <= pos <= HOLD_MAX_POS):
+            await self.gripper.do_command({"set": APPROACH_OPEN_POS})
+            await self._gripper_to(gx, gy, hz, used)
+            return {"ok": False, "stage": "grip", "error": "fingers did not close on the knob"}
+        return {"ok": True, "wrist": used, "loads": await self._loads()}
+
+    async def _let_go_and_lift(self, wrist) -> List[float]:
+        """Step 6 of _operate: release, straight up, then up to the hover height. Returns the release x, y."""
+        f = await self.arm.get_end_position()
+        await self.gripper.do_command({"set": RELEASE_POS})
+        await asyncio.sleep(SETTLE_S)
+        await self._speed(SLOW_DEG_S)
+        await self._gripper_to(f.x, f.y, GRASP_Z_MM + LIFT_MM, wrist)
+        await self._speed(TRAVEL_DEG_S)
+        await self._gripper_to(f.x, f.y, DESCENT_Z_MM[0], wrist)
+        return [f.x, f.y]
+
+    async def open_drawer(self, drawer: int) -> Dict[str, Any]:
+        """Open `drawer` TRAVEL_MM and leave it open. Returns where to drop a block into it."""
+        if self.open_drawers:
+            return {"success": False, "stage": "open",
+                    "error": f"drawer {sorted(self.open_drawers)[0]} is open; close it first (one open at a time)"}
+        log: Dict[str, Any] = {}
+        prep = await self._prepare(drawer, log)
+        if prep is None:
+            return {"success": False, **log}
+        fk, ref, wrist, wrist_alt = prep
+        pull = fk["open_dir"]
+        knob_z = next(k["z"] for k in fk["knobs"] if k["drawer"] == drawer)
+        gx, gy = ref["x"] + pull[0] * GRASP_OUTWARD_MM, ref["y"] + pull[1] * GRASP_OUTWARD_MM
+        grip = await self._grip_at(gx, gy, (wrist, wrist_alt), log)
+        if not grip["ok"]:
+            return {"success": False, "stage": grip["stage"], "error": grip.get("error"), **log}
+        used = grip["wrist"]
+        ox, oy = gx + pull[0] * TRAVEL_MM, gy + pull[1] * TRAVEL_MM
+        await self._gripper_to(ox, oy, GRASP_Z_MM, used)
+        pos = await self._gpos()
+        log["opened"] = {"to": [round(ox, 1), round(oy, 1)], "grip_pos": pos}
+        if pos is None or not (HOLD_MIN_POS <= pos <= HOLD_MAX_POS):
+            await self.gripper.do_command({"set": RELEASE_POS})
+            await self._gripper_to(ox, oy, GRASP_Z_MM + LIFT_MM, used)
+            return {"success": False, "stage": "open", "error": "lost the grip while opening - released "
+                    "and lifted; drawer may be partly open", **log}
+        await asyncio.sleep(SETTLE_S)
+        rx, ry = await self._let_go_and_lift(used)
+        # The knob is where the fingers let go; the drawer face is KNOB_PROTRUSION_MM behind the knob,
+        # and the organizer face is TRAVEL_MM behind that. Drop DROP_FROM_FACE_MM out from the organizer.
+        knob = [rx - pull[0] * GRASP_OUTWARD_MM, ry - pull[1] * GRASP_OUTWARD_MM]
+        back = TRAVEL_MM + KNOB_PROTRUSION_MM - DROP_FROM_FACE_MM
+        drop = {"x": round(knob[0] - pull[0] * back, 1), "y": round(knob[1] - pull[1] * back, 1),
+                "z": round(knob_z, 1)}
+        self.open_drawers[drawer] = {"open_grasp": [rx, ry], "closed_grasp": [gx, gy], "pull": pull,
+                                     "wrist": used, "loads_closed": grip["loads"], "knob_z": knob_z}
+        self._save_open_state()
+        return {"success": True, "drawer": drawer, "open_knob": [round(knob[0], 1), round(knob[1], 1)],
+                "drop_point": drop, "open_dir": pull, **log}
+
+    async def close_drawer(self, drawer: int) -> Dict[str, Any]:
+        """Close a drawer this service opened: grip the knob where it was left, push it back, check."""
+        st = self.open_drawers.get(drawer)
+        if st is None:
+            return {"success": False, "stage": "close", "error": f"no open drawer {drawer} remembered; open it "
+                    "with this service first, or close it by hand"}
+        log: Dict[str, Any] = {}
+        ox, oy = st["open_grasp"]
+        grip = await self._grip_at(ox, oy, (st["wrist"],), log)
+        if not grip["ok"]:
+            return {"success": False, "stage": grip["stage"], "error": grip.get("error"), **log}
+        gx, gy = st["closed_grasp"]
+        await self._gripper_to(gx, gy, GRASP_Z_MM, grip["wrist"])
+        loads_after = await self._loads()
+        fully_closed = None
+        if st.get("loads_closed") and loads_after:
+            diff = max(abs(a - b) for a, b in zip(loads_after, st["loads_closed"]))
+            fully_closed = diff <= CLOSE_LOAD_TOLERANCE
+            log["closed"] = {"load_diff_vs_before": round(diff, 2), "fully_closed": fully_closed}
+        await self._let_go_and_lift(grip["wrist"])
+        del self.open_drawers[drawer]
+        self._save_open_state()
+        return {"success": True, "drawer": drawer, "fully_closed": fully_closed, **log}
+
     async def do_command(self, command: Mapping[str, ValueTypes], *, timeout: Optional[float] = None,
                          **kwargs) -> Mapping[str, ValueTypes]:
         action = command.get("action") or "all_drawers"
@@ -823,7 +962,18 @@ class MyGenericService(Generic, EasyResource):
                 return await self.find_knobs()
             if action == "release":
                 return await self.release()
-            return {"error": f"unknown action '{action}'. Use all_drawers, drawer_run, locate, find_knobs or release."}
+            if action == "open":
+                return await self.open_drawer(int(command.get("drawer", 1)))
+            if action == "close":
+                return await self.close_drawer(int(command.get("drawer", 1)))
+            if action == "status":
+                return {"open_drawers": {str(k): v for k, v in self.open_drawers.items()}}
+            if action == "forget":
+                self.open_drawers = {}
+                self._save_open_state()
+                return {"forgot": True}
+            return {"error": f"unknown action '{action}'. Use all_drawers, drawer_run, locate, find_knobs, "
+                    "release, open, close, status or forget."}
         except Exception as e:
             self.logger.error(f"{action} failed: {e}")
             return {"success": False, "error": str(e)}

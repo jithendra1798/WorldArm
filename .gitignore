@@ -4,7 +4,7 @@ __pycache__/
 *.pyc
 .DS_Store
 captures/
-.pick_place_view_pose.json
+.pick_place_view_pose*.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

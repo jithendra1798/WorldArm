@@ -6,7 +6,7 @@ Team of 4, two arms. Demos are **Saturday at 3:30 PM**; feature freeze at 12:30.
 
 **Robots that model their world:** they remember what they can't see, and predict where things will be.
 
-- **Chapter 1, memory.** One arm sorts blue, yellow and green blocks into a 3-drawer organizer, one color per drawer.
+- **Chapter 1, memory.** One arm sorts colored blocks into a 3-drawer organizer, one color per drawer.
   - Once a drawer closes, its contents are hidden, so the robot keeps a belief about where everything is.
   - It predicts what each action will do, and flags a *surprise* when what it sees disagrees.
 - **Chapter 2, physics.** Two arms face each other across one table, under an overhead depth camera, and pass a black rubber ball.
@@ -16,7 +16,7 @@ Team of 4, two arms. Demos are **Saturday at 3:30 PM**; feature freeze at 12:30.
 
 **The demo, in order:**
 1. **Sort:** blocks go into their color's drawer.
-2. **Where's blue?** The robot opens the drawer it remembers.
+2. **Where's green?** The robot opens the drawer it remembers.
 3. **Surprise:** a judge secretly moves a block; the robot notices when it looks.
 4. **Ball into a held drawer:** the other arm holds a drawer open, the ball goes in, the drawer closes. Then "where's the ball?"
 5. **Intercept:** a judge rolls the ball across the table, and the robot puts a cup where the ball *will be*, before it gets there.
@@ -32,16 +32,20 @@ Team of 4, two arms. Demos are **Saturday at 3:30 PM**; feature freeze at 12:30.
 
 This is the guaranteed demo, so it comes before chapter 2.
 
-1. **Benchmark each skill as it is**, through its existing service command, with `bench_skill.py`. 10 logged trials per skill, with success judged by a person:
-   - pick success per color;
-   - drawer open to the 75% mark, and close;
-   - dropping into an open drawer.
-2. **Connect the skills to the world-model loop** through their service commands. Gaps to close:
-   - Drawer open and close are a single combined command today.
-   - The drawer service isn't deployed on armfarm03 yet.
-   - Pick needs a color option on armfarm03.
-3. **Full episodes:** ≥10 seeded sorting episodes, recording where the blocks really ended up (`--ask-truth`), then the scoreboard.
+The drawer service is deployed on armfarm03 as `PickBottle`. Waj's pick-and-drop (`move_one_object`) accepts any world-frame drop point.
+
+1. **Deploy the drawer split.** `modules/drawer_service.py` now has `open` (pull 12 cm, let go, return a drop point inside the drawer), `close`, and `status` and `forget`, which never move. Paste it into the inline module behind `PickBottle` and deploy. Its logic is tested with fake hardware (`tests/test_drawer_service.py`).
+2. **Set up armfarm03 for Waj's scene parser:**
+   - Put two blue-tape squares in the wrist camera's overview, with the blocks in one of them.
+   - Colors default to **green → 1, yellow → 2, black → 3** (`WORLDARM_ASSIGNMENT`). His detector names green, yellow, orange, red and black. Blue is the tape, and red is the knobs.
+   - Put the arm at the overview pose and save it: `python sort_bench.py --teach-view`.
+3. **Run:** `python sort_bench.py --preview`, then `python sort_bench.py --episodes 10`.
+   - Each block goes drawer `open` → pick and drop → `close`.
+   - Every step's own success report is logged, and you record where each block really ended up.
+   - `python scoreboard.py` shows per-step and end-to-end rates.
 4. **Freeze:** tag `v1-sorting` in git and record a backup video. Chapter 2 work then happens on a branch, so v1 can't break.
+
+Waj's code defaulted to armfarm05 in two places: its side wall (y = −500; armfarm03's is at +500) and one shared overview-pose file. Both can now be set per arm, and `sort_bench.py` applies armfarm03's values.
 
 **Gate (8:45 PM):** per-skill numbers and ≥10 full episodes on the scoreboard, plus the backup video.
 
@@ -185,5 +189,5 @@ Defined in `worldarm/schema.py`. A robot implements `execute(action) -> Observat
 
 - **The organizer:** 3 opaque drawers with rounded red knobs. The smooth slides have no stop, so a pulled-out drawer detaches.
 - **Pulls:** each drawer goes to 75% of its maximum travel, never further.
-- **Red only ever means a knob.** The blocks are blue, yellow and green.
+- **Red only ever means a knob.** The sorting blocks are green, yellow and black by default; blue is the tape color Waj's scene parser uses for its work squares.
 - **The ball:** black rubber. Find it in color (dark on white); depth on black rubber is unreliable.

@@ -18,6 +18,8 @@ driving through the table surface).
 
 from __future__ import annotations
 
+import os
+
 from viam.proto.common import (
     Geometry,
     GeometriesInFrame,
@@ -29,6 +31,10 @@ from viam.proto.common import (
 
 # Configured table: center z=-123, height 200 → top surface.
 TABLE_TOP_Z_MM = -23.0
+# Wall positions default to armfarm05. Other arms override them, e.g. armfarm03 has its
+# side wall at y = +500 (measured with verify_camera.py).
+WALL_FRONT_X_MM = float(os.getenv("VIAM_WALL_FRONT_X_MM", "740"))
+WALL_SIDE_Y_MM = float(os.getenv("VIAM_WALL_SIDE_Y_MM", "-500"))
 
 OBSTACLE_COMPONENT_NAMES = ("table", "wall-front", "wall-side", "ceiling")
 
@@ -50,12 +56,12 @@ def workcell_world_state(
         ),
         Geometry(
             label="safety-wall-front",
-            center=Pose(x=740, y=0, z=300, o_z=1),
+            center=Pose(x=WALL_FRONT_X_MM, y=0, z=300, o_z=1),
             box=RectangularPrism(dims_mm=Vector3(x=100, y=3000, z=1600)),
         ),
         Geometry(
             label="safety-wall-side",
-            center=Pose(x=0, y=-500, z=300, o_z=1),
+            center=Pose(x=0, y=WALL_SIDE_Y_MM, z=300, o_z=1),
             box=RectangularPrism(dims_mm=Vector3(x=3000, y=100, z=1600)),
         ),
     ]

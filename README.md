@@ -4,7 +4,7 @@
 
 Our entry for Viam's *Code That Moves* hackathon (NYC, Oct 16–17 2026).
 
-- **Chapter 1, memory:** an arm sorts blue, yellow and green blocks into a 3-drawer organizer, one color per drawer.
+- **Chapter 1, memory:** an arm sorts colored blocks into a 3-drawer organizer, one color per drawer.
   - Closed drawers hide their contents, so the robot keeps a belief about where everything is.
   - It predicts what each action will do, and flags a surprise when what it sees disagrees.
 - **Chapter 2, physics:** two arms face each other across one table, under an overhead depth camera, and pass a black rubber ball.
@@ -56,6 +56,7 @@ Our entry for Viam's *Code That Moves* hackathon (NYC, Oct 16–17 2026).
 | Path | What it is |
 |---|---|
 | `worldarm/`, `run_episode.py`, `try_skill.py`, `scoreboard.py` | World model, planner, episode loop, simulator, logging and scoreboard. `run_episode.py --fake` runs without an arm. |
+| `sort_bench.py` | **Moves the arm.** The chapter 1 benchmark on armfarm03: for each block, drawer `open` → Waj's pick-and-drop into the drawer → `close`. Asks where each block really ended up, and logs it for the scoreboard. |
 | `bench_skill.py` | **Moves the arm.** Benchmarks one skill as deployed: runs its service command N times, a person judges each try, and results go on the scoreboard |
 | `modules/drawer_service.py` | Drawer service: finds the knobs from above, opens and closes a drawer |
 | `pick_place_cubes.py`, `moving-blocks-module/`, `run_moving_blocks_viam.py` | Pick and place between two tape zones, several colors, with recovery |
@@ -65,7 +66,7 @@ Our entry for Viam's *Code That Moves* hackathon (NYC, Oct 16–17 2026).
 | `teach.py` | Manual-mode helper: gripper open and grab, pose readout, captures. **Moves the gripper only.** |
 | `check_connection.py`, `inspect_scene.py`, `verify_camera.py` | Read-only checks: connection, camera and frames, calibration |
 
-`connection.py`, `perception.py` and `frames.py` exist both at the top level (used by the team's scripts) and in `worldarm/`. They've diverged and need merging.
+The top-level `connection.py`, `perception.py` and `frames.py` are shims that forward to `worldarm/`; the team's scripts import them.
 
 ## Setup
 

@@ -48,7 +48,8 @@ from pick_red_cube import (
 from workcell_obstacles import TABLE_TOP_Z_MM, compute_grasp_tcp_z, workcell_world_state
 
 logger = logging.getLogger("pick_place_cubes")
-VIEW_POSE_PATH = Path(__file__).with_name(".pick_place_view_pose.json")
+# One saved overview pose per arm: set VIAM_VIEW_POSE_FILE on any arm other than armfarm05.
+VIEW_POSE_PATH = Path(__file__).with_name(os.getenv("VIAM_VIEW_POSE_FILE", ".pick_place_view_pose.json"))
 
 
 @dataclass
