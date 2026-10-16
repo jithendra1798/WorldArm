@@ -501,9 +501,64 @@ async def move_to_place_approach(
     raise last_error
 
 
+def planar_distance_mm(a: DetectedObject, b: DetectedObject) -> float:
+    return math.hypot(a.center_world.x - b.center_world.x, a.center_world.y - b.center_world.y)
+
+
+def order_picks_outer_first(objects: list[DetectedObject]) -> list[DetectedObject]:
+    """Pick the most isolated objects first so the open gripper clears neighbors."""
+    if len(objects) <= 1:
+        return list(objects)
+
+    def isolation(obj: DetectedObject) -> float:
+        others = [planar_distance_mm(obj, other) for other in objects if other is not obj]
+        return min(others) if others else 1e9
+
+    return sorted(objects, key=isolation, reverse=True)
+
+
+def neighbor_clearance_mm(
+    obj: DetectedObject,
+    neighbors: list[DetectedObject],
+) -> tuple[float, float, float]:
+    """Return (approach_xy_offset, hover_clearance, nearest_gap) for a crowded pick."""
+    if not neighbors:
+        return 0.0, setting("VIAM_NEIGHBOR_HEIGHT_CLEARANCE_MM", 40.0), 1e9
+    nearest = min(neighbors, key=lambda other: planar_distance_mm(obj, other))
+    gap = planar_distance_mm(obj, nearest)
+    # Open xArm jaws span roughly 85 mm; stay above any nearby object top.
+    neighbor_tops = [other.height_mm for other in neighbors]
+    hover_extra = max(setting("VIAM_NEIGHBOR_HEIGHT_CLEARANCE_MM", 40.0), max(neighbor_tops) + 25.0)
+    # Lateral offset away from the nearest neighbor when the gap is tight.
+    lateral = 0.0
+    if gap < setting("VIAM_NEIGHBOR_LATERAL_TRIGGER_MM", 90.0):
+        lateral = setting("VIAM_NEIGHBOR_APPROACH_OFFSET_MM", 45.0)
+    return lateral, hover_extra, gap
+
+
+def approach_offset_xy(
+    obj: DetectedObject,
+    neighbors: list[DetectedObject],
+    offset_mm: float,
+) -> tuple[float, float]:
+    if offset_mm <= 0 or not neighbors:
+        return obj.center_world.x, obj.center_world.y
+    nearest = min(neighbors, key=lambda other: planar_distance_mm(obj, other))
+    dx = obj.center_world.x - nearest.center_world.x
+    dy = obj.center_world.y - nearest.center_world.y
+    length = math.hypot(dx, dy)
+    if length < 1.0:
+        return obj.center_world.x + offset_mm, obj.center_world.y
+    return (
+        obj.center_world.x + offset_mm * dx / length,
+        obj.center_world.y + offset_mm * dy / length,
+    )
+
+
 async def move_one_object(
     obj: DetectedObject,
     destination: Pose,
+    remaining_neighbors: list[DetectedObject],
     arm: Arm,
     gripper: Gripper,
     motion: MotionClient,
@@ -526,28 +581,45 @@ async def move_one_object(
         table_margin_mm=table_margin,
     )
     clearance = cfg["VIAM_APPROACH_CLEARANCE_MM"]
+    lateral, neighbor_hover, nearest_gap = neighbor_clearance_mm(obj, remaining_neighbors)
+    hover_clearance = max(clearance, neighbor_hover, obj.height_mm + 30.0)
     floor = TABLE_TOP_Z_MM + table_margin
-    pregrasp = make_pose(obj.center_world.x, obj.center_world.y, grasp_z + clearance, orientation)
+    approach_x, approach_y = approach_offset_xy(obj, remaining_neighbors, lateral)
+    safe_hover = make_pose(approach_x, approach_y, grasp_z + hover_clearance, orientation)
+    over_object = make_pose(
+        obj.center_world.x, obj.center_world.y, grasp_z + hover_clearance, orientation,
+    )
     grasp = make_pose(obj.center_world.x, obj.center_world.y, grasp_z, orientation)
-    lift = make_pose(obj.center_world.x, obj.center_world.y, grasp_z + cfg["VIAM_LIFT_MM"], orientation)
+    lift = make_pose(
+        obj.center_world.x, obj.center_world.y,
+        grasp_z + max(cfg["VIAM_LIFT_MM"], hover_clearance),
+        orientation,
+    )
     # Stay high enough that opening jaws clear neighboring placed objects.
     release_height = max(
         table_margin + 40.0,
         setting("VIAM_PLACE_RELEASE_HEIGHT_MM", 120.0),
     )
     place_z = max(destination.z + release_height, floor)
-    place = make_pose(destination.x, destination.y, place_z, orientation)
     place_approach_z = max(place_z + 30.0, destination.z + table_margin + clearance)
 
-    logger.info("Object at %s, estimated height %.1f mm", fmt_pose(obj.center_world), obj.height_mm)
+    logger.info(
+        "Object at %s, height≈%.1f mm, nearest neighbor gap≈%.1f mm",
+        fmt_pose(obj.center_world), obj.height_mm, nearest_gap,
+    )
     logger.info("Destination %s", fmt_pose(destination))
-    logger.info("Grasp TCP %s; release TCP %s", fmt_pose(grasp), fmt_pose(place))
+    logger.info(
+        "Approach hover %.1f mm above grasp with %.1f mm lateral offset; grasp TCP %s",
+        hover_clearance, lateral, fmt_pose(grasp),
+    )
 
     # Full open for picking so fingers clear neighboring source objects.
     await open_gripper_full(gripper)
-    await move_gripper(motion, gripper_name, pregrasp, world_state, linear=False,
-                       timeout=timeout, label="pre-grasp", table_margin_mm=table_margin)
-    # One linear descent — fewer motion stops than stepped waypoints.
+    # Come in from the clear side, then center over the target at height, then drop.
+    await move_gripper(motion, gripper_name, safe_hover, world_state, linear=False,
+                       timeout=timeout, label="neighbor-clear approach", table_margin_mm=table_margin)
+    await move_gripper(motion, gripper_name, over_object, world_state, linear=True,
+                       timeout=timeout, label="center over object", table_margin_mm=table_margin)
     await move_gripper(motion, gripper_name, grasp, world_state, linear=True,
                        timeout=timeout, label="grasp descent", table_margin_mm=table_margin)
 
@@ -555,7 +627,7 @@ async def move_one_object(
     grip_speed = optional_int("VIAM_GRIPPER_SPEED", 0) or None
     grip_torque = optional_int("VIAM_GRIPPER_TORQUE_PCT", 0) or None
     if not await gentle_grab(gripper, speed=grip_speed, torque=grip_torque):
-        await move_gripper(motion, gripper_name, pregrasp, world_state, linear=True,
+        await move_gripper(motion, gripper_name, over_object, world_state, linear=True,
                            timeout=timeout, label="retreat after missed grasp",
                            table_margin_mm=table_margin)
         raise RuntimeError("Gripper did not confirm a grasp; stopping without lifting.")
@@ -669,7 +741,8 @@ async def main() -> None:
     gripper_name = env("VIAM_GRIPPER")
     enabled = os.getenv("VIAM_PICK_ENABLE", "0") == "1"
     teach_view_pose = os.getenv("VIAM_SAVE_VIEW_POSE", "0") == "1"
-    max_objects = optional_int("VIAM_MAX_OBJECTS_PER_RUN", 10)
+    # Transfer every detected object in the occupied square (no 3-object demo cap).
+    max_objects = optional_int("VIAM_MAX_OBJECTS_PER_RUN", 40)
     if max_objects < 1:
         raise RuntimeError("VIAM_MAX_OBJECTS_PER_RUN must be >= 1.")
 
@@ -736,22 +809,27 @@ async def main() -> None:
         source_index = 0 if counts[0] else 1
         destination_index = 1 - source_index
         source, destination_zone = scene.zones[source_index], scene.zones[destination_index]
-        if len(source.objects) > max_objects:
-            raise RuntimeError(
-                f"Found {len(source.objects)} objects, above VIAM_MAX_OBJECTS_PER_RUN="
-                f"{max_objects}; increase explicitly after reviewing preview."
+        pick_list = order_picks_outer_first(source.objects)
+        if len(pick_list) > max_objects:
+            logger.warning(
+                "Detected %d objects; transferring the first %d (most isolated). "
+                "Raise VIAM_MAX_OBJECTS_PER_RUN to move more in one run.",
+                len(pick_list), max_objects,
             )
+            pick_list = pick_list[:max_objects]
 
-        logger.info("Found two blue-tape zones; source zone=%d (%d objects), destination zone=%d (empty).",
-                    source_index + 1, len(source.objects), destination_index + 1)
-        for idx, obj in enumerate(source.objects, 1):
+        logger.info(
+            "Found two blue-tape zones; source zone=%d (%d objects), destination zone=%d (empty).",
+            source_index + 1, len(pick_list), destination_index + 1,
+        )
+        for idx, obj in enumerate(pick_list, 1):
             logger.info(
                 "Source object %d: color=%s pixel=%s bbox=%s height≈%.1f mm center=%s",
                 idx, obj.color_name, obj.pixel, obj.bbox, obj.height_mm, fmt_pose(obj.center_world),
             )
 
         slot_pixels = drop_slot_pixels(
-            destination_zone, source.objects, prefer_toward=source.center_px,
+            destination_zone, pick_list, prefer_toward=source.center_px,
         )
         destinations: list[Pose] = []
         for idx, slot in enumerate(slot_pixels, 1):
@@ -764,13 +842,16 @@ async def main() -> None:
             logger.info("Preview only. Set VIAM_PICK_ENABLE=1 to execute the transfers.")
             return
         assert cfg is not None and world_state is not None
+        remaining = list(pick_list)
         try:
-            for index, (obj, target) in enumerate(zip(source.objects, destinations), 1):
+            for index, (obj, target) in enumerate(zip(pick_list, destinations), 1):
+                neighbors = [other for other in remaining if other is not obj]
                 await move_one_object(
-                    obj, target, arm, gripper, motion, gripper_name,
+                    obj, target, neighbors, arm, gripper, motion, gripper_name,
                     world_state, cfg, table_margin, timeout,
                 )
-                logger.info("Transferred %d/%d object(s).", index, len(source.objects))
+                remaining = [other for other in remaining if other is not obj]
+                logger.info("Transferred %d/%d object(s).", index, len(pick_list))
             logger.info("Transfer complete: all detected objects are in the other taped zone.")
         except Exception:
             try:
