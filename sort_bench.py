@@ -8,7 +8,7 @@ At the end of each episode you say where every block really is, so success is ju
 
 Setup on armfarm03 (once):
   1. Deploy modules/drawer_service.py to the inline module behind PickBottle (open/close need it).
-  2. Two blue-tape squares in the wrist camera's overview; the blocks go in one of them.
+  2. One blue-tape square in the wrist camera's overview, with the blocks in it.
      Default colors: green -> drawer 1, yellow -> 2, black -> 3 (change with WORLDARM_ASSIGNMENT).
      Waj's detector names green, yellow, orange, red and black. Blue is the tape; red is the knobs.
   3. Put the arm at an overview pose that sees both squares, then:  python sort_bench.py --teach-view
@@ -27,6 +27,7 @@ from worldarm import connection  # loads .env first, so its values win over the 
 # Waj's code defaults to armfarm05; these are armfarm03's values. Set before importing it.
 ARMFARM03_DEFAULTS = {
     "VIAM_VIEW_POSE_FILE": ".pick_place_view_pose.armfarm03.json",
+    "VIAM_TAPE_ZONES": "1",                # one source square; the drawers are the destination
     "VIAM_WALL_SIDE_Y_MM": "500",           # armfarm03's side wall (verify_camera.py)
     "VIAM_WORKSPACE_Y_MIN_MM": "-700",      # armfarm03 works at negative y
     "VIAM_WORKSPACE_Y_MAX_MM": "440",       # stay clear of the side wall at y = 450-550
@@ -88,23 +89,20 @@ class Bench:
                                               table_keep_out_mm=ppc.setting("VIAM_TABLE_KEEP_OUT_MM", 0.0))
 
     async def scan(self):
-        """Overview pose -> scene. Returns (scene, source zone, other zone) or (scene, None, None) if empty."""
+        """Overview pose -> scene. Returns (scene, source square) or (scene, None) if it's empty."""
         await ppc.open_gripper_for_pick(self.gripper)
         await ppc.return_to_view_pose(self.m, self.arm, self.motion, self.gripper_name, self.world,
                                       self.margin, self.timeout)
         await ppc.with_timeout(self.arm.do_command({"set_speed": self.cfg["VIAM_APPROACH_SPEED_DEGS_PER_SEC"]}),
                                10.0, "set approach speed")
         scene = await ppc.capture_scene(self.m, self.camera, self.camera_name)
-        try:
-            source, other = ppc.choose_source_and_destination(scene.zones, None)
-        except RuntimeError:  # no objects left in either square
-            return scene, None, None
-        return scene, source, other
+        source = max(scene.zones, key=lambda z: len(z.objects))
+        return scene, (source if source.objects else None)
 
     async def episode(self, assignment: dict[str, int], logger) -> tuple[str, str, int]:
         n, done = 0, set()
         while True:
-            _, source, other = await self.scan()
+            _, source = await self.scan()
             todo = [o for o in (source.objects if source else [])
                     if o.color_name in assignment and o.color_name not in done]
             if not todo:
@@ -126,7 +124,7 @@ class Bench:
             dp = reply["drop_point"]
             target = Pose(x=dp["x"], y=dp["y"], z=dp["z"] + self.args.drop_extra_mm, o_z=-1)
             neighbors = [o for o in source.objects if o is not obj]
-            obstacles = list({o.pixel: o for o in neighbors + list(other.objects)}.values())
+            obstacles = list({o.pixel: o for o in neighbors}.values())
             result = await ppc.move_one_object(obj, target, neighbors, obstacles, self.arm, self.gripper,
                                                self.motion, self.gripper_name, self.world, self.cfg,
                                                self.margin, self.timeout)
@@ -182,7 +180,7 @@ async def main() -> None:
             raise SystemExit("Cancelled.")
 
         if args.preview:
-            _, source, _ = await bench.scan()
+            _, source = await bench.scan()
             for o in (source.objects if source else []):
                 plan = f"drawer {assignment[o.color_name]}" if o.color_name in assignment else "not sorted"
                 print(f"  {o.color_name:<7} height {o.height_mm:.0f} mm at {ppc.fmt_pose(o.center_world)} -> {plan}")

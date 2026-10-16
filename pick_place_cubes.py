@@ -232,6 +232,8 @@ def build_zones(color: np.ndarray, depth: np.ndarray) -> tuple[np.ndarray, list[
         candidates.append((score, polygon, center_px, plane, depth_noise_mm))
 
     candidates.sort(key=lambda item: item[0], reverse=True)
+    # Two squares (move from one to the other) by default; sorting into drawers uses one.
+    expected = int(setting("VIAM_TAPE_ZONES", 2))
     chosen: list[Zone] = []
     for score, polygon, center_px, plane, depth_noise_mm in candidates:
         if any(math.hypot(center_px[0] - z.center_px[0], center_px[1] - z.center_px[1]) < 120 for z in chosen):
@@ -245,12 +247,12 @@ def build_zones(color: np.ndarray, depth: np.ndarray) -> tuple[np.ndarray, list[
                 cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * inset + 1, 2 * inset + 1)),
             )
         chosen.append(Zone(polygon, interior, center_px, plane, depth_noise_mm, []))
-        if len(chosen) == 2:
+        if len(chosen) == expected:
             break
 
-    if len(chosen) != 2:
+    if len(chosen) != expected:
         raise RuntimeError(
-            f"Expected exactly two blue-tape zones, detected {len(chosen)}. "
+            f"Expected exactly {expected} blue-tape zone(s), detected {len(chosen)}. "
             "Check the camera view/tape thresholds; refusing to move."
         )
     return mask, chosen

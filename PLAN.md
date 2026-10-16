@@ -34,9 +34,9 @@ This is the guaranteed demo, so it comes before chapter 2.
 
 The drawer service is deployed on armfarm03 as `PickBottle`. Waj's pick-and-drop (`move_one_object`) accepts any world-frame drop point.
 
-1. **Deploy the drawer split.** `modules/drawer_service.py` now has `open` (pull 12 cm, let go, return a drop point inside the drawer), `close`, and `status` and `forget`, which never move. Paste it into the inline module behind `PickBottle` and deploy. Its logic is tested with fake hardware (`tests/test_drawer_service.py`).
+1. **Deploy the drawer split.** ✅ Deployed Friday evening and checked with `status`. `modules/drawer_service.py` now has `open` (pull 12 cm, let go, return a drop point inside the drawer), `close`, and `status` and `forget`, which never move. Paste it into the inline module behind `PickBottle` and deploy. Its logic is tested with fake hardware (`tests/test_drawer_service.py`).
 2. **Set up armfarm03 for Waj's scene parser:**
-   - Put two blue-tape squares in the wrist camera's overview, with the blocks in one of them.
+   - Put **one** blue-tape square in the wrist camera's overview, with the blocks in it. The drawers are the destination, so no second square is needed (`VIAM_TAPE_ZONES=1`; armfarm05 keeps its two).
    - Colors default to **green → 1, yellow → 2, black → 3** (`WORLDARM_ASSIGNMENT`). His detector names green, yellow, orange, red and black. Blue is the tape, and red is the knobs.
    - Put the arm at the overview pose and save it: `python sort_bench.py --teach-view`.
 3. **Run:** `python sort_bench.py --preview`, then `python sort_bench.py --episodes 10`.
