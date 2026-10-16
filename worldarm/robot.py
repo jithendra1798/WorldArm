@@ -48,7 +48,10 @@ class ViamRobot:
             return obs
 
         if action.kind is Act.PLACE:
-            return await self.skills.place(action.drawer)
+            obs = await self.skills.place(action.drawer)
+            look = await self.skills.look_into(action.drawer)   # look into the drawer after dropping
+            obs.facts.update(look.facts)                        # adds contents:<k> for the world model
+            return obs
 
         if action.kind in (Act.OPEN, Act.CLOSE):
             if self.cfg.containers == "bins":  # open-top bins: nothing to open or close
