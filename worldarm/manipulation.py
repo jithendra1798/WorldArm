@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import time
 
+from viam.components.camera import Camera
 from viam.components.gripper import Gripper
 from viam.components.sensor import Sensor
 from viam.components.switch import Switch
@@ -23,6 +24,8 @@ from viam.robot.client import RobotClient
 from viam.services.motion import MotionClient
 
 from .config import Config
+from .drawer_check import colors_in
+from .perception import capture
 from .safety import check_gripper_target
 from .schema import Observation
 
@@ -119,6 +122,15 @@ class Manipulator:
         if not await self.holding():
             self.held = None
         return Observation(facts={"holding": self.held})
+
+    async def look_into(self, k: int) -> Observation:
+        """MOVES THE ARM. Look into container k from above and report the block colors inside."""
+        await self.go(f"drop-{k}")        # go above the open drawer
+        await self.back_off(150)          # back up ~15 cm so the camera sees the whole drawer
+        cam = Camera.from_robot(self.machine, self.cfg.camera)
+        color, _ = await capture(cam)     # take a color photo (depth not needed)
+        seen = colors_in(color)           # your detector: e.g. ["blue"]
+        return Observation(facts={f"contents:{k}": seen})
 
     async def open_drawer(self, k: int) -> Observation:
         await self.go(f"knob-{k}-pre")
