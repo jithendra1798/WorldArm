@@ -17,9 +17,9 @@ import time
 from pathlib import Path
 
 from worldarm.config import load_config
-from worldarm.episode import belief_accuracy, run_episode
+from worldarm.episode import run_episode, summarize
 from worldarm.logger import EpisodeLogger
-from worldarm.planner import Goal, satisfied
+from worldarm.planner import Goal
 from worldarm.schema import TABLE, UNKNOWN, drawer
 from worldarm.sim import OFFSTAGE, FakeRobot, SimConfig
 from worldarm.world_model import Belief
@@ -123,14 +123,7 @@ async def main() -> None:
     truth = result.truth
     if truth is None and args.ask_truth:
         truth = ask_truth(cfg.colors, cfg.n_drawers)
-    truth_success = satisfied(Belief.from_json(truth), goal, cfg.assignment) if truth else None
-    summary = {
-        "status": result.status, "reason": result.reason, "steps": result.steps,
-        "surprises": result.surprises, "duration_s": round(time.time() - t0, 2),
-        "belief_success": result.status == "done", "truth_success": truth_success,
-        "belief_accuracy": belief_accuracy(result.belief, truth),
-        "belief_final": result.belief, "truth_final": truth,
-    }
+    summary = summarize(result, goal, cfg.assignment, time.time() - t0, truth)
     logger.finish(summary)
     if mode != "dry":
         STATE_DIR.mkdir(exist_ok=True)
@@ -138,7 +131,7 @@ async def main() -> None:
 
     print(f"\n{result.status}: {result.reason}  ({result.steps} steps, {result.surprises} surprises)")
     if truth is not None:
-        print(f"truth success: {truth_success}   belief accuracy: {summary['belief_accuracy']:.0%}")
+        print(f"truth success: {summary['truth_success']}   belief accuracy: {summary['belief_accuracy']:.0%}")
     print(f"belief: {result.belief.blocks}")
 
 

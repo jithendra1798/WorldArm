@@ -33,6 +33,7 @@ class Config:
     colors: tuple[str, ...]
     n_drawers: int
     assignment: dict[str, int]  # color -> drawer
+    containers: str       # "drawers" (organizer) or "bins" (open-top bins: open/close do nothing)
     limits: Limits
     approach_mm: float    # pick approach height above the block center
     settle_s: float       # wait after gripper open/grab
@@ -52,6 +53,7 @@ def load_config() -> Config:
         colors=COLORS,
         n_drawers=3,
         assignment=parse_assignment(g("WORLDARM_ASSIGNMENT", "blue:1,yellow:2,green:3")),
+        containers=g("WORLDARM_CONTAINERS", "drawers"),
         limits=Limits(table_z_mm=float(g("WORLDARM_TABLE_Z_MM", "2.0")),
                       fingertip_mm=float(g("WORLDARM_FINGERTIP_MM", "60"))),
         approach_mm=100.0,

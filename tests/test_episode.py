@@ -2,7 +2,7 @@ import asyncio
 
 from worldarm.episode import run_episode
 from worldarm.planner import Goal, satisfied
-from worldarm.schema import TABLE, drawer
+from worldarm.schema import TABLE, Act, Action, drawer
 from worldarm.sim import FakeRobot, SimConfig
 from worldarm.world_model import Belief
 
@@ -48,6 +48,22 @@ def test_blind_robot_believes_it_succeeded_when_it_did_not():
             assert result.status == "done"
             return
     raise AssertionError("expected at least one blind failure across seeds")
+
+
+def test_script_runs_exactly_the_given_actions():
+    script = [Action(Act.OBSERVE_TABLE), Action(Act.OPEN, drawer=1), Action(Act.PICK, color="blue"),
+              Action(Act.PLACE, drawer=1), Action(Act.CLOSE, drawer=1)]
+    result = asyncio.run(run_episode(FakeRobot(ON_TABLE, 3), Belief.initial(ASSIGN, 3), Goal("sort"),
+                                     ASSIGN, script=script, say=lambda _: None))
+    assert result.status == "done" and result.steps == 5 and result.surprises == 0
+    assert result.belief.blocks["blue"] == drawer(1)
+
+
+def test_script_stops_before_acting_when_a_precondition_fails():
+    script = [Action(Act.PICK, color="blue")]  # the belief doesn't know blue is on the table
+    result = asyncio.run(run_episode(FakeRobot(ON_TABLE, 3), Belief.initial(ASSIGN, 3), Goal("sort"),
+                                     ASSIGN, script=script, say=lambda _: None))
+    assert result.status == "stuck" and result.steps == 0
 
 
 def test_hidden_hand_is_noticed_and_the_block_is_found():

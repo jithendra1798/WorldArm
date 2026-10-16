@@ -49,7 +49,7 @@ The `erh:vmodutils` module is already installed, because the obstacles use it. A
 | `knob-1-pre`, `knob-2-pre`, `knob-3-pre` | Gripper horizontal and **open**, about 5 cm in front of knob k (1 = top) |
 | `drop-1`, `drop-2`, `drop-3` | Gripper above the exposed part of drawer k **when it's open** |
 
-On Arm B, with bins instead of drawers, only `home-pose`, `table-view` and `drop-1..3` are needed (one drop above each bin).
+On Arm B, with bins instead of drawers, only `home-pose`, `table-view` and `drop-1..3` are needed (one drop above each bin). Also set `WORLDARM_CONTAINERS=bins` in that arm's env file, so open and close do nothing.
 
 **To save a pose:**
 1. Move the arm there (manual mode, see below).

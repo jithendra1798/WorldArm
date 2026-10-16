@@ -30,22 +30,31 @@ class EpisodeResult:
 
 async def run_episode(robot: Robot, belief: Belief, goal: Goal, assignment: dict[str, int],
                       logger: EpisodeLogger | None = None, *, blind: bool = False,
-                      max_steps: int = 40, max_repeats: int = 3,
+                      max_steps: int = 40, max_repeats: int = 3, script: list[Action] | None = None,
                       say: Callable[[str], None] = print) -> EpisodeResult:
-    """Run until the planner has nothing left to do.
+    """Run until the planner (or the `script`, if given) has nothing left to do.
 
     blind=True is the ablation for H1: post-action measurements are ignored (the robot trusts its
     predictions). What verification would have caught is still logged as `ignored_surprises`.
+    script runs exactly those actions instead of planning (try_skill.py), with the same checks.
     """
     searched: set[str] = set()
     n_surprises, repeats, last_failed = 0, 0, ""
     status, reason, steps = "max_steps", f"reached {max_steps} steps", 0
+    queue = list(script) if script is not None else None
 
     for step in range(1, max_steps + 1):
-        action = next_action(belief, goal, assignment, searched)
+        if queue is not None:
+            action = queue.pop(0) if queue else None
+        else:
+            action = next_action(belief, goal, assignment, searched)
         if action is None:
-            done = satisfied(belief, goal, assignment)
-            status, reason = ("done", "goal satisfied") if done else ("stuck", "no action reaches the goal")
+            if queue is not None:
+                status, reason = "done", "script finished"
+            elif satisfied(belief, goal, assignment):
+                status, reason = "done", "goal satisfied"
+            else:
+                status, reason = "stuck", "no action reaches the goal"
             break
         problems = preconditions(belief, action)
         if problems:
@@ -103,6 +112,19 @@ async def run_episode(robot: Robot, belief: Belief, goal: Goal, assignment: dict
             break
 
     return EpisodeResult(status, reason, steps, n_surprises, belief, robot.truth())
+
+
+def summarize(result: EpisodeResult, goal: Goal | None, assignment: dict[str, int],
+              duration_s: float, truth: dict | None) -> dict:
+    """summary.json for a run. Success is judged against the truth when we have it, not the belief."""
+    truth_success = satisfied(Belief.from_json(truth), goal, assignment) if truth and goal else None
+    return {
+        "status": result.status, "reason": result.reason, "steps": result.steps,
+        "surprises": result.surprises, "duration_s": round(duration_s, 2),
+        "belief_success": result.status == "done", "truth_success": truth_success,
+        "belief_accuracy": belief_accuracy(result.belief, truth),
+        "belief_final": result.belief, "truth_final": truth,
+    }
 
 
 def belief_accuracy(belief: Belief, truth: dict | None) -> float | None:
