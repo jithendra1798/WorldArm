@@ -6,7 +6,7 @@ Our entry for Viam's *Code That Moves* hackathon (NYC, Oct 16–17 2026).
 The arm sorts three colored blocks into a 3-drawer organizer, one color per drawer: it pulls each drawer open, places the block, and closes it.
 Once a drawer is closed, its contents are hidden, so the robot has to keep a **world model**: a belief about where every block is, including the ones it can't see. It predicts the effect of each action and checks the prediction against what the camera and gripper report.
 
-The plan, roles and how we'll measure results are in **[PLAN.md](PLAN.md)**.
+The plan, roles and how we'll measure results are in **[PLAN.md](PLAN.md)**. The Viam modules and services we reuse, and how to configure them, are in **[docs/viam-config.md](docs/viam-config.md)**.
 
 ## The demo (three moments)
 
