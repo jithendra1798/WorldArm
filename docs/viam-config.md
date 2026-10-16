@@ -111,3 +111,28 @@ Source: [`modules/drawer_service.py`](../modules/drawer_service.py). It's a Viam
 **Picking a block by hand:** guide the gripper above the block with the fingers lined up against two parallel faces, lower to mid-height, `g`, then `h` should say `holding: True`, then lift.
 
 **Pulling a drawer by hand:** gripper horizontal, fingers around the knob stem behind the head, `g`, then pull straight back to the 75% mark and no further. Watch that the organizer doesn't slide.
+
+## Overhead camera (armfarm03)
+
+`overview-cam` is the Orbbec Astra 2 above the table, using Viam's Orbbec module (`viam:orbbec`):
+
+```json
+{
+  "name": "overview-cam",
+  "api": "rdk:component:camera",
+  "model": "viam:orbbec:astra2",
+  "attributes": {
+    "serial_number": "<from orbbec-discovery or the sticker>",
+    "sensors": {
+      "color": { "width": 1280, "height": 720, "format": "MJPG" },
+      "depth": { "width": 800, "height": 600, "format": "Y16" }
+    }
+  }
+}
+```
+
+**Notes, measured Friday evening:**
+- **Use the point cloud (`get_point_cloud`) for 3D.** The depth image comes back rounded to whole meters (values 1 or 2), so it's unusable. The point cloud puts the table ≈ 1.31 m below the camera.
+- **Speed through the SDK from a laptop:** 3.5 fps with depth, 5.8 fps color only, with 1 in 10 requests over 400 ms. For ball tracking, record at 30 fps with data capture on the robot, or run the tracker on armfarm03's computer.
+- **`webcam-1` reads the same camera's color stream** through the generic webcam driver (`video10`, 1280×720 MJPEG). Two drivers on one USB camera can knock each other out; keep only `overview-cam` once its color is confirmed stable.
+- **If the module asks for a firmware update,** send it `{"update_firmware": ""}` and don't unplug the camera while it runs.

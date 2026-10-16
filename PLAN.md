@@ -1,292 +1,189 @@
 # WorldArm plan
 
-Team of 4, two arms. Demos are **Saturday at 3:30 PM**. Doors close at 9 PM on Friday, with no overnight hacking.
+Team of 4, two arms. Demos are **Saturday at 3:30 PM**; feature freeze at 12:30. Doors close at 9 PM on Friday.
 
-## How we work
+## The story
 
-1. **Reuse first.** Low-level pieces already exist (drivers, saved poses, block detection, pick and place, trajectory record and replay). We configure them; we don't rewrite them.
-2. **Skeleton first.** A thin layer of our code connects those pieces into one full, logged episode: `python run_episode.py`. It already runs in simulation (`--fake`); it goes onto the arms this afternoon.
-3. **Four owners, one robot.** Everyone improves one part of the **same running system** and proves it with a number on the scoreboard (`python scoreboard.py`).
+**Robots that model their world:** they remember what they can't see, and predict where things will be.
 
-## Who does what
+- **Chapter 1, memory.** One arm sorts blue, yellow and green blocks into a 3-drawer organizer, one color per drawer.
+  - Once a drawer closes, its contents are hidden, so the robot keeps a belief about where everything is.
+  - It predicts what each action will do, and flags a *surprise* when what it sees disagrees.
+- **Chapter 2, physics.** Two arms face each other across one table, under an overhead depth camera, and pass a black rubber ball.
+  - The same world model now predicts *motion*: where a rolling or tossed ball will be, and when.
+  - The ball's physics is learned from the robot's own trials.
+  - The ball is just another object in the belief, a toss is an action with a predicted outcome, and a miss is a surprise.
 
-The task splits into the robot's three skills, plus the memory and the loop that tie them together:
+**The demo, in order:**
+1. **Sort:** blocks go into their color's drawer.
+2. **Where's blue?** The robot opens the drawer it remembers.
+3. **Surprise:** a judge secretly moves a block; the robot notices when it looks.
+4. **Ball into a held drawer:** the other arm holds a drawer open, the ball goes in, the drawer closes. Then "where's the ball?"
+5. **Intercept:** a judge rolls the ball across the table, and the robot puts a cup where the ball *will be*, before it gets there.
 
-| | Owner | Goal | Files | Score | Demo moment |
-|---|---|---|---|---|---|
-| **1. Find and pick up any block** | **Waj** | Find every block on the table, whatever its shape, and pick it up | `worldarm/vision.py` `perception.py` `frames.py`; `pick_block` in `manipulation.py`; new `eval_perception.py` | Detection recall, color accuracy, position error (mm); pick success per shape | Cylinders and triangles get sorted, not just cubes |
-| **2. Open and close the drawers** | **Sandeep** | Pull each drawer to **75% of its travel, never further**, and push it closed | `open_drawer` and `close_drawer` in `worldarm/manipulation.py`; `safety.py`; knob poses and recordings | Open success (within ±10 mm of the 75% mark); close success; drawers pulled out: 0 | Drawers opening smoothly to the mark |
-| **3. Sort the blocks into the drawers by color** | **Riyaj** | Put each block into its color's drawer and confirm it landed there | `place` in `worldarm/manipulation.py`; drop poses; the color → drawer assignment | Place success (seen in the right drawer); share of misses caught | Each color in its own drawer, confirmed on screen |
-| **4. World model, integration & demo** | **Jithendra** | Remember what's in closed drawers, notice tampering, find things; run the whole loop on both arms; measure and present | `worldarm/world_model.py` `planner.py` `episode.py` `robot.py` `sim.py`; `run_episode.py` `try_skill.py` `scoreboard.py`; docs | End-to-end success judged on where the blocks really are; belief accuracy; surprise precision and recall | "Where's blue?" and the surprise |
+## Where we are (Fri 6:45 PM)
 
-**Jithendra's arm work:**
-- Bring up every skill on the arm with its owner.
-- Run the first full episodes on both arms.
-- Run the hidden-hand and "where's blue?" demos.
-- Stretch: a retrieve skill that takes a block back out of its drawer.
+- **Chapter 1 skills work in isolation:** picking, opening and closing the drawers, and dropping blocks. The code is in the repo as Viam modules and scripts.
+- **The world-model loop** (`run_episode.py`) runs end to end in simulation, but isn't connected to those skills yet.
+- **The overhead camera works** (`overview-cam` on armfarm03; details under Stage 2). Only armfarm03's half of the table is in its view so far.
+- **The second arm, armfarm05**, is at the other end of the table.
 
-**Shared files:**
-- `worldarm/schema.py` (actions and fact keys) changes only at a sync. Adding a new fact key is fine; just announce it.
-- `worldarm/manipulation.py` is shared by Waj, Sandeep and Riyaj. Each of you changes only your own skill function, and pulls before editing. The helpers at the top (saved poses, safe moves, the gripper, recording playback) change only after asking Jithendra.
+## Stage 1: integrate and benchmark chapter 1 (tonight, on armfarm03)
 
-### Arms
+This is the guaranteed demo, so it comes before chapter 2.
 
-- **Arm A:** armfarm03 with the drawer organizer. This is Sandeep's and Riyaj's arm.
-- **Arm B:** armfarm5 with three open bins. Set `WORLDARM_CONTAINERS=bins` in its env file. This is Waj's arm; Riyaj also develops the drawer check on its bins.
+1. **Benchmark each skill as it is**, through its existing service command. 10 logged trials per skill, with success judged by a person:
+   - pick success per color;
+   - drawer open to the 75% mark, and close;
+   - dropping into an open drawer.
+2. **Connect the skills to the world-model loop** through their service commands. Gaps to close:
+   - Drawer open and close are a single combined command today.
+   - The drawer service isn't deployed on armfarm03 yet.
+   - Pick needs a color option on armfarm03.
+3. **Full episodes:** ≥10 seeded sorting episodes, recording where the blocks really ended up (`--ask-truth`), then the scoreboard.
+4. **Freeze:** tag `v1-sorting` in git and record a backup video. Chapter 2 work then happens on a branch, so v1 can't break.
 
-Only one person drives an arm at a time, and the driver stays at the arm with the E-stop in reach for every motion. **Two people** are needed for manual-mode recording and for the first run of any new motion.
+**Gate (8:45 PM):** per-skill numbers and ≥10 full episodes on the scoreboard, plus the backup video.
 
-**Friday**
+## Stage 2: one shared world (tonight and Saturday early)
 
-| Time | Arm A (drawers) | Arm B (bins) | Off the arm |
+**Camera roles:**
+- **The overhead camera tracks the ball and judges every outcome.**
+- **The wrist cameras are each arm's close-up eyes:** picking up the ball or cup, and checking what's inside a cup or drawer.
+- **The cameras are combined in the world model, not at the pixel level.** Each camera reports what it measured, with its timestamp, and the belief merges them. Cameras on two different machines can't be synchronized in hardware anyway.
+
+**The overhead camera sees the whole ball path,** from the release point to the cup or drawer, with margin:
+- At 30 fps, a toss gives only about 9 frames end to end; a partial view leaves 3–4.
+- The start lets the model predict early. The landing lets it check the prediction and learn.
+- The predicted-vs-actual arc is the demo's best visual.
+
+**Placement:**
+- Keep it overhead, but widen the view until both arms' hand-off areas fit.
+- The white table is the best possible background for a black ball.
+- Ball height in the air comes from three sources: the thrower's own release position and speed; the ball's apparent size (closer looks bigger); and the point cloud, where black rubber returns depth.
+
+**Background:** the camera is fixed, so we ignore everything outside a fixed outline of the table. On the table, we pick out the ball by its dark color, its size (about 30 px at this height), its motion, and **agreement with the predicted path**.
+
+**Measured on `overview-cam`** (Orbbec Astra 2):
+
+| Measurement | Value |
+|---|---|
+| Image | 1280×720 color, fx = fy = 834 px |
+| Table distance | ≈ 1.31 m below the camera (from its point cloud) |
+| 3D | **Use the point cloud.** The depth image comes back rounded to whole meters (1 or 2), so it's unusable. |
+| Speed through the SDK from a laptop | 3.5 fps with depth; 5.8 fps color only. 1 in 10 requests takes > 400 ms. |
+
+That's far too slow and jittery for a toss. So:
+- **To learn:** record at 30 fps on the robot with Viam's data capture.
+- **For live tracking:** run the tracker on armfarm03's computer.
+- `webcam-1` reads the same camera's color stream through a second driver. Earlier, one of the two dropped out, so keep only `overview-cam` once its color is confirmed stable.
+
+**Calibration:** touch 4–6 marked table points with each arm's fingertip. This maps overhead pixels to table coordinates for both arms. Report the leftover error in mm; target ≤ 10 mm.
+
+**Two-arm safety:**
+- Each arm stays in its own half; the middle is for the ball only. Each arm's half goes in the other machine's config as an obstacle.
+- Two E-stops staffed whenever both arms can move.
+- **Speed caps:** 15°/s for the arm and 0.9 m/s for the ball, from the catcher module. Raise them only with Viam staff's OK.
+
+**Measure before designing:** frame rate on the robot; command delay to each arm; how long each arm takes to move a given distance at the capped speed.
+
+**What the speed caps mean physically:**
+- At 0.9 m/s, a ball thrown at 45° travels about 8 cm; released from 30 cm up, it travels about 22 cm. A throw across the table needs 2.5–3 m/s.
+- So "throws" are short tosses between grippers that meet in the middle, or the ball rolls.
+- The catcher can't chase at 15°/s. It has to be in place before the ball arrives, which means **predicting is required**.
+
+## Stage 3: the two-arm ladder (Saturday)
+
+Each rung is benchmarked before moving to the next.
+
+| Rung | What happens | World model | Score |
 |---|---|---|---|
-| 1:30–2:30 | **Sandeep + Riyaj:** tape the organizer down; measure each drawer's maximum travel and mark 75% on its side; test by hand (**G1**); save `home-pose`, `table-view`, `organizer-view`, `knob-1..3-pre`, then open each drawer to its mark by hand and save `drop-1..3` | **Waj + Jithendra:** add the services to *both* machines in the Viam app; Arm B env file and `verify_camera.py`; save Arm B poses; `--dry-run` (**G2**) | — |
-| 2:30–3:30 | **Sandeep + Riyaj:** record `grasp-k`, `pull-k` (to the mark) and `push-k` for each drawer; replay each once | **Waj:** ground-truth sheet and perception test set (every shape) | **Jithendra:** world model in simulation (hidden-hand protocol) |
-| 3:30–4:30 | **Sandeep:** `try_skill.py open k` and `close k`, 3× per drawer | **Jithendra + Waj:** `try_skill.py observe`, then `pick blue`, then `open 1 pick blue place 1` | **Riyaj:** the drawer check, on saved captures. **Waj:** shape-finder baseline |
-| 4:30 | **Sync** | | |
-| 4:30–5:15 | **Riyaj + Sandeep:** `try_skill.py open k pick <color> place k close k` for each drawer | **Jithendra:** first full episode on the bins (**G3**) | **Waj:** depth-first detector |
-| 5:15–6:00 | **Jithendra + Sandeep:** first full drawer episode (**G4**) | **Waj:** pick trials, 10 per shape | **Riyaj:** wire the check into `place` |
-| 6:00–7:00 | **Dinner + sync:** the v0 numbers on the scoreboard become everyone's starting numbers | | |
-| 7:00–8:00 | **Sandeep:** travel measurement, straight-line pull | **Waj:** any-shape pick, live | **Riyaj:** release height and position. **Jithendra:** demo UI |
-| 8:00–8:45 | **Riyaj:** place and check on the drawers | **Jithendra:** logged episodes, hidden-hand runs, **backup video** | **Sandeep, Waj:** fixes |
-| 8:45 | **Sync:** push everything; agree tomorrow's first task (**G5**) | | |
-
-**Saturday**
-
-| Time | Arm A (drawers) | Arm B (bins) | Off the arm |
-|---|---|---|---|
-| 9:30 | **Standup at the scoreboard** | | |
-| 9:45–11:00 | **Sandeep** (to 10:20), then **Riyaj** | **Waj** | **Jithendra:** probabilistic belief, demo UI |
-| 11:00–12:30 | **Jithendra:** hidden-hand runs (H3), "where's blue?", full drawer episodes. Sandeep and Riyaj nearby for fixes | **Riyaj** (to 11:45): H1 runs, checks vs. `--blind`. Then **Waj:** any-shape episodes | |
-| 12:30 | **Feature freeze (G6).** Lunch. Jithendra runs the final evaluation on frozen code. | | |
-| 1:30–2:30 | Results slide: each owner gives one row. Demo UI polish. | | |
-| 2:30–3:30 | Rehearse the demo twice, with one person trying to break it | | |
-| 3:30 | **Demo** | | |
-
-### Checkpoints
-
-| | When | Owner | Passes when | If it fails |
-|---|---|---|---|---|
-| **G1** | Fri 2:30 | Sandeep | By hand: the fingers hold the knob stem; the drawer pulls to its 75% mark without the organizer sliding; with a block inside, the open drawer doesn't tip | Pull less (as far as is safe), or Arm A also uses bins with lids |
-| **G2** | Fri 2:30 | Waj | `run_episode.py --dry-run` sees all three colors (cubes and bars) from `table-view` on both arms | Waj writes a color-threshold detector first |
-| **G3** | Fri 5:15 | Jithendra | First logged real episode on Arm B (bins) | Run single skills with `try_skill.py` and fix the first failure |
-| **G4** | Fri 6:00 | Jithendra, Sandeep, Riyaj | First logged real drawer episode on Arm A; v0 numbers on the scoreboard | Use Arm B's numbers as the baseline; drawers get Saturday morning |
-| **G5** | Fri 8:45 | Jithendra | ≥10 real episodes logged, backup video recorded, everything pushed | — |
-| **G6** | Sat 12:30 | Everyone | Feature freeze: after this, only fixes | — |
-
-### 1. Find and pick up any block (Waj)
-
-**Research question:** does a depth-first detector beat shape-finder on recall and position error, and does gripping each shape along the right axis raise pick success? Shape-finder only sees squares and rectangles. Depth-first means: find anything that sticks up above the fitted table plane, then classify its color.
-
-**Until 6 PM**
-- [ ] With Jithendra: add the services in [docs/viam-config.md](docs/viam-config.md) §1 to both machines; `--dry-run` sees all three colors (**G2**)
-- [ ] **Ground-truth sheet:**
-  1. Tape a paper with 9 crosses, 5 cm apart, to Arm B's table.
-  2. In manual mode, touch 3 crosses with a fingertip and save each with `teach.py` (`s cross-1` …). With the gripper pointing straight down, fingertip z = gripper z − 60 mm.
-  3. Work out every cross's world position from those three.
-- [ ] **Test set:**
-  1. Capture ≥15 layouts with blocks centered on crosses, every shape, saved with `teach.py`, `c layout-01`.
-  2. Record which block sits on which cross in `data/perception/labels.json`.
-  3. Images stay out of git because they're too big; share the folder.
-- [ ] **Baselines:** shape-finder's recall per shape and color, and its position error (median and 90th percentile). Pick success for cubes and bars: `try_skill.py pick <color>`, 10 tries each.
-
-**Then**
-- [ ] Depth-first detector in `vision.py`, **same return format**, covering cylinders and triangles
-- [ ] Grip axis per block in `pick_block`: across two parallel faces. For a cylinder that's across its diameter; for a triangular prism, across its two triangular ends.
-- [ ] Retry a failed grab once, from a fresh detection
-
-**Score:** recall, color accuracy and position error on the test set; pick success per shape on the arm. Target: ≤ 5 mm median, 100% color, ≥ 95% picks for every shape.
-
-### 2. Open and close the drawers (Sandeep)
-
-**The rule:** pull each drawer to **75% of its maximum travel, never further.** The drawers detach, and the arm can't put a detached drawer back.
-
-**Research question:** how reliable are recorded demonstrations? And can a straight-line pull from the knob, measured by the arm itself, hit the 75% mark within ±10 mm just as reliably?
-
-**Until 6 PM (Arm A, with Riyaj)**
-- [ ] Tape the organizer down. Measure each drawer's maximum travel, interior height, knob diameter and how far the knob sticks out, and write them under "Organizer and blocks" below.
-- [ ] Mark 75% on each drawer's side with tape, so everyone can see the target
-- [ ] Test by hand (**G1**)
-- [ ] Save poses `home-pose`, `table-view`, `organizer-view`, `knob-1..3-pre` ([docs/viam-config.md](docs/viam-config.md) §2)
-- [ ] Record `grasp-k`, `pull-k` (to the mark) and `push-k` for k = 1..3 (§3); replay each once with the E-stop ready
-- [ ] `try_skill.py open k` and `close k`, 3× per drawer
-
-**Then**
-- [ ] **Measure the travel.** The fingers hold the knob during the pull, so travel = how far the gripper moved.
-  - Report `drawer_open:<k>` (with the mm in the detail), so opens stop showing as "unverified" on the scoreboard.
-  - A slipped knob shows up in the holding check.
-- [ ] **Straight-line pull** to exactly the mark from the knob pose (`motion.move` with a linear constraint) instead of replaying the recording; compare the two
-- [ ] **Close check:** is the drawer flush? (Travel back to zero, or depth at `organizer-view`.)
-- [ ] Stretch: find the red knob from `organizer-view`, so the organizer can be placed anywhere
-
-**Score:** open success (within ±10 mm of the mark), close success, drawers pulled out (must stay 0). Target ≥ 95%.
-
-### 3. Sort the blocks into the drawers by color (Riyaj)
-
-**Research question:** does looking into the drawer after placing catch the misses the gripper sensor can't, and how much does that raise end-to-end success? In simulation it takes success from 51% to 99% (see "The skeleton" below). This is H1 on real hardware.
-
-**Until 6 PM**
-- [ ] On Arm A with Sandeep: open each drawer to its mark by hand and save `drop-1..3` above the exposed part, low enough that the block falls ≤ 3 cm
-- [ ] **Look into a container** (a `look_into(k)` next to `place` in `manipulation.py`):
-  - From `drop-k`, back off about 150 mm and run shape-finder's 2D detections (colors only; no depth needed). Report `contents:<k>`.
-  - Develop it on saved captures and Arm B's bins first.
-  - Check that the drawer's interior isn't detected as a colored object.
-- [ ] With Sandeep: `try_skill.py open k pick <color> place k close k` for each drawer
-
-**Then**
-- [ ] Wire the check into `place` (and into `open`, for the world model) with Jithendra
-- [ ] **Reliable placing:** release height and position inside the exposed part. A tall block must end up lying below the drawer's rim, or closing will jam.
-- [ ] **H1 on real hardware:** the same system with checks vs. `--blind`, ≥10 episodes each
-
-**Score:** place success (seen in the right drawer), share of misses caught, H1 difference. Target: ≥ 95% placed, every miss caught.
-
-### 4. World model, integration & demo (Jithendra)
-
-**Research question:** with sensor and action reliability estimated from our own logs, does a probabilistic belief do three things?
-- (a) Stay correct about what's in closed drawers (H2).
-- (b) Flag tampering with high precision and recall (H3).
-- (c) Find a block in fewer drawer openings than v0's fixed search.
-
-**Until 6 PM**
-- [ ] With Waj: services and Arm B setup (1:30–2:30)
-- [ ] **Hidden-hand protocol, in simulation:**
-  - Scripted perturbations (move a block to another drawer, remove one, leave a drawer open) on a seeded schedule.
-  - A `--perturbed` note in each run's meta, so the scoreboard can compute precision and recall.
-  - The hidden hand puts blocks in the front part of a drawer, which is the part visible when it's open.
-- [ ] Bring-up on Arm B with Waj: `try_skill.py observe`, then `pick blue`, then `open 1 pick blue place 1`. On bins, `open` does nothing physically, but the belief needs it: placing into a container believed closed is refused.
-- [ ] First full episode on Arm B (**G3**) and on Arm A (**G4**)
-- [ ] Keep `main` working: before a merge, `python -m pytest` passes and `run_episode.py --fake` ends `done`
-
-**Then**
-- [ ] ≥10 real episodes on Friday; backup video before 9 PM (**G5**)
-- [ ] Hidden-hand runs (H3) and "where's blue?" on the drawers
-- [ ] Probabilistic belief and active search: open the most likely drawer first
-- [ ] Stretch, on the arm: **retrieve.** Pick a block out of its open drawer using Waj's detection and pick, and put it on the table.
-- [ ] Demo UI: live camera next to the belief, with a banner when there's a surprise. Results slide.
-
-**Score:** end-to-end success judged on where the blocks really are (≥ 8/10), belief accuracy, surprise precision and recall.
-
-### Rules
-
-1. **Own your files and functions.** In `manipulation.py`, change only your own skill. Ask before changing anything else of someone's. Wiring a new measurement into `robot.py` is a one-line change; tell Jithendra.
-2. **Branches.** Work on `<name>/<thing>`. Before merging to `main`, `python -m pytest` must pass and `python run_episode.py --fake` must end `done`. `git pull --rebase` often.
-3. **No unlogged experiments.** Every real run goes through `run_episode.py` or `try_skill.py`; the results slide comes from `runs/`.
-4. **A change counts when the number moves:** on real runs (or the perception test set), with n stated. Note the number before and after.
-5. **Safety:** the driver stays at the arm with the E-stop in reach. New motions are tested high first. Drawers never go past the 75% mark.
-6. **Blocked for 20 minutes? Say so** in the team chat. Don't wait for the next sync.
-
-**Syncs:** 5 minutes at the scoreboard: Fri 4:30, 6:00, 8:45; Sat 9:30, 12:30. Each owner says their number, their next change, and what's blocking them.
-
-## Reuse first: what we take, what we build
-
-| Layer | We reuse | Notes |
-|---|---|---|
-| Drivers | `viam:ufactory` (arm, gripper), `viam:realsense` | Already configured |
-| Saved poses | `erh:vmodutils:arm-position-saver` (switch: `set_position(2)` = go to the saved pose) | Teach in the Viam app; replay from code |
-| Obstacles and motion | `erh:vmodutils:obstacle`, built-in motion service | Our code still enforces its own table floor; the configured table is 25 mm too low |
-| Block detection, v0 | `devrel:shape-finder:detector` → `viam:vision:detections-to-segments` (3D objects) | Labels like `square-blue`. **Only four-sided shapes**, fixed color ranges. No cylinders, triangles or round knobs. |
-| Pick, v0 | The pick pattern from Viam's [pick-and-place workshop](https://docs.viam.com/tutorials/pick-and-place/) ([code](https://github.com/viam-devrel/pick-and-place/blob/main/scripts/reference-solution.py)) | Same hardware. Plans the approach in the camera frame, then descends in the gripper frame; fingertips are about 60 mm past the gripper frame. |
-| Drawer moves, v0 | `devrel:arm-recorder:recorder`: record a pull or push by hand in manual mode, replay it | **Arm only**: the xArm gripper doesn't support `get_position`, so our code does grab and open between recordings |
-| Data and training | Viam data manager; [`viam-devrel/yolo-training`](https://github.com/viam-devrel/yolo-training) + `viam-labs:vision:yolov8` | If Waj wants a trained detector |
-| Precision and markers | `viam:camera-calibration:handeye`, `viam:apriltag:pose_tracker` | Only if a track needs them |
-| AI tooling | [`viam-devrel/agent-skills`](https://github.com/viam-devrel/agent-skills) (Claude Code plugins); Viam MCP server `https://app.viam.com/mcp` | Viam SDK knowledge verified against the source |
-
-**What we build, which is the research:**
-- **World model:** a belief state over hidden drawer contents, a predicted effect for every action, surprise detection when a prediction doesn't match what we see, recovery, and "where is X?" retrieval.
-- **Observation model:** the checks the world model needs. Is the block gone from the table? How far is the drawer open? What's in this open drawer?
-- **Perception beyond shape-finder:** depth-based segmentation that works for any shape (cylinders, triangles), red-knob detection, and robustness to lighting.
-- **Drawers anywhere:** move from the detected knob instead of replaying recordings, so the organizer can be placed anywhere.
-- **Evaluation:** seeded episodes, logs, metrics, and comparisons that switch one component on or off.
-
-Configuration for the reused pieces: **[docs/viam-config.md](docs/viam-config.md)**.
+| **A. Ball into a held drawer** | Arm 1 pulls a drawer to 75% and keeps holding the knob. Arm 2 drops or tosses the ball in from 20–30 cm away. The drawer closes. | The ball becomes an object in the belief: "ball in drawer 2". Then "where's the ball?" | Success rate; belief accuracy |
+| **B. Intercept a rolling ball** | A judge rolls the ball across the table; the catcher places a cup where the ball will be, before it arrives | A rolling model, with its slowdown learned from our rolls, predicts where and when. The catcher only commits to points it can reach in time. | Intercept rate, predicting vs. chasing the last seen position (N ≥ 20 each) |
+| **C. Toss into a placed bowl** | Arm 2 tosses with adjustable release settings; the overhead camera records the landing; a fitted model aims the next toss. Arm 1 puts the bowl at the predicted landing spot. | A learned toss model with uncertainty | Landing error vs. number of practice tosses; catch rate |
+| D. Stretch | Correcting during flight; tosses across the table | Only if staff allow higher speeds and the measured delays allow it | — |
 
 ## What we claim, and how we'll show it
 
 | | Hypothesis | Measured by |
 |---|---|---|
-| **H1** | Checking every action against its prediction raises end-to-end success | The **same system** with checks on vs. off, ≥10 episodes each, 95% Wilson intervals |
-| **H2** | The belief state tracks hidden drawer contents correctly | Fraction of blocks whose believed location matches reality at episode end |
-| **H3** | The robot detects when the world was changed behind its back | Precision and recall of "surprise" flags over scripted perturbations (block moved, drawer left open, block removed) |
+| **H1** | Checking every action against its prediction raises end-to-end success | The same system with checks on vs. off, ≥10 episodes each |
+| **H2** | The belief tracks hidden drawer contents correctly | Share of blocks whose believed location matches reality at episode end |
+| **H3** | The robot detects when the world changed behind its back | Precision and recall of surprises over scripted perturbations |
+| **H4** | Learned ball physics predicts where the ball will stop or land better than "it keeps its current velocity" | Prediction error vs. time before arrival, both models |
+| **H5** | Going to the predicted point beats chasing the last seen position | Intercept/catch rate, N ≥ 20 each |
+| **H6** | The robot still knows where the ball is after it's hidden in a drawer | Belief accuracy for the ball, including scripted perturbations |
 
-**Episode protocol and logging**
-- Block start positions and colors come from a seeded generator, which prints a layout for the person resetting the table.
-- Every episode is logged; no cherry-picking.
-- Each step writes one JSON line to `runs/<timestamp>/episode.jsonl`: belief before, action, predicted effect, observation, outcome, and paths to the before and after images.
-- Failures are sorted into categories (perception, grasp, drawer, planner) for the results slide.
+Every number has n and a 95% interval. Every run is logged to `runs/` (seeded layouts, no cherry-picking), and failures are sorted into categories for the results slide.
 
-## The skeleton
+## Who does what
 
-**Status (Fri 1:30 PM):**
-- Runs end to end in simulation (`python run_episode.py --fake`); 26 tests pass.
-- The real-arm code: `vision.py` finds blocks, `manipulation.py` holds the arm skills (pick, place, open, close), and `robot.py` wires them together. It is **not yet validated on hardware**.
-- `try_skill.py` is the bring-up tool.
+**Chapter 1** (skills done; integration tonight):
 
-```
-worldarm/  schema · world_model · planner · episode · sim · robot · vision · manipulation
-           safety · config · logger · metrics
-run_episode.py   one full episode: --fake | --dry-run | real;  --goal sort | find:<color>;  --blind
-try_skill.py     a short script of skills on a real arm, checked and logged (bring-up)
-scoreboard.py    success rates with 95% intervals, per-action results, surprise counts
-teach.py         manual-mode helper: gripper open/grab, pose readout, captures
-```
-
-**First simulated result (H1).** 100 seeds, every skill failing 15% of the time, scored on whether the blocks truly ended up sorted:
-
-| Checks after each action | Truth success | 95% interval |
-|---|---|---|
-| Full: drawer contents and drawer state | 99% | 95–100% |
-| Real v0: gripper sensor and table only | 51% | 41–61% |
-| None (`--blind`) | 38% | 29–48% |
-
-These failure rates are assumptions, and the simulated checks never make mistakes. What it does show is where checking helps most: **looking into the drawer**, which is Riyaj's first task.
-
-**Version 0 of each stage:**
-
-| Stage | v0 |
+| Package | Owner |
 |---|---|
-| Find and pick | The `vision-segment` service from the `table-view` pose; the workshop pick pattern |
-| Drawers | Switch `knob-k-pre` → recording `grasp-k` → grab → recording `pull-k` (to the 75% mark) → open. Close is recording `push-k`. Organizer taped in place. |
-| Placing | Switch `drop-k`, then open the gripper |
-| World model | Deterministic belief with predicted effects; checks use only `IsHoldingSomething` and "block gone from the table" |
-| Planner | Fixed order: for each block on the table, open drawer → pick → place → close |
+| Find and pick up any block | **Waj** |
+| Open and close the drawers (75%, never further) | **Sandeep** |
+| Sort the blocks into the drawers by color (dropping) | **Riyaj** |
+| World model, integration, benchmark & demo | **Jithendra** |
 
-## Interfaces
+**Chapter 2** (proposed; confirm at the next sync):
 
-Defined in `worldarm/schema.py`. A robot (real or simulated) implements one method:
+| Package | Owner |
+|---|---|
+| Ball tracking and prediction on the overhead camera (builds on his catcher's tracking) | **Waj** |
+| Holding a drawer open as the target; the two-arm zones | **Sandeep** |
+| The release: drops, tosses and rolls from arm 2; practice-toss data | **Riyaj** |
+| Stage 1 integration and benchmark; shared calibration; the program that coordinates both machines; the ball in the world model; evaluation; demo screen | **Jithendra** |
 
-```python
-async def execute(action: Action) -> Observation
-# Action: observe_table | open(k) | close(k) | pick(color) | place(k)     (drawer 1 = top)
+## Timeline
 
-@dataclass
-class Observation:
-    facts: dict       # measured AFTER the action; checked against the prediction
-    pre_facts: dict   # measured BEFORE it (e.g. table detections at pick time); checked against the prior
-    detail: dict      # anything else worth logging
+| When | What |
+|---|---|
+| **Fri 7:00–8:30** | Stage 1: per-skill benchmarks, integration, full episodes on armfarm03. In parallel: widen the overhead view to both arms; touch-point calibration. |
+| **Fri 8:30–8:45** | Backup video, tag `v1-sorting`, push (**gate**) |
+| **Fri 8:45–9:00** | Sync: confirm the chapter 2 split; first task for Saturday |
+| **Sat 9:30–11:00** | Rungs A and B, with benchmarks |
+| **Sat 11:00–12:30** | Rung C; H4–H6 runs |
+| **Sat 12:30** | **Feature freeze.** Lunch. Final evaluation on frozen code. |
+| **Sat 1:30–2:30** | Results slide; demo screen |
+| **Sat 2:30–3:30** | Rehearse twice, with one person trying to break it |
+| **Sat 3:30** | **Demo** |
 
-# fact keys
-holding          -> color | None
-drawer_open:<k>  -> bool
-contents:<k>     -> [colors seen in open drawer k]
-on_table         -> [colors seen on the table]
-```
+## Rules
 
-**A fact you don't measure, you leave out.** It can't cause a false surprise, and the scoreboard counts that step as "unverified". Adding a new measurement means adding a fact key: for example, `contents:<k>` from a look into the open drawer. The world model needs no other change.
+1. **Own your files and functions.** Ask before changing someone else's.
+2. **Branches.** Work on `<name>/<thing>`. Before merging to `main`, `python -m pytest` must pass and `python run_episode.py --fake` must end `done`.
+3. **No unlogged experiments.** Results come from `runs/`.
+4. **A change counts when the number moves:** on real runs, with n stated.
+5. **Safety:** someone at every arm that can move, E-stop in reach. New motions are tested slow and high first. Drawers never go past the 75% mark.
+6. **Blocked for 20 minutes? Say so.**
 
-For a bin (Arm B, `WORLDARM_CONTAINERS=bins`), `open` and `close` do nothing, so the same planner runs on both arms.
+## Reference
 
-## Organizer and blocks
+### Reuse first
 
-**What we know:**
-- The organizer has 3 **opaque** drawers, each with a **rounded red knob**.
-- The slides are smooth, and **there's no stop**: a drawer slides all the way out and detaches.
-- The blocks are **blue, yellow and green**, in mixed shapes.
+| Layer | We reuse |
+|---|---|
+| Drivers | `viam:ufactory` (arm, gripper), `viam:realsense` (wrist), `viam:orbbec` (overhead) |
+| Saved poses, obstacles, motion | `erh:vmodutils` (arm-position-saver, obstacle), built-in motion service |
+| Detection | YOLOv8 (`viam-labs:YOLOv8`), color detectors → `detections-to-segments` (3D objects) |
+| Skills | The team's modules, controlled through their service commands (DoCommand): pick, drawers, catch, transfer between zones |
 
-**Decisions:**
-- **Red only ever means a knob.**
-- **Knob grasp:** approach horizontally and close the fingers on the knob's **stem, behind the head**. When we pull, the head can't slip through the closed fingers.
-- **Pull each drawer to 75% of its maximum travel, never further.** A detached drawer is very hard for the arm to put back. Mark the 75% point on each drawer.
-- **Tape the organizer down.**
-- **v0 blocks are cubes and bars,** because shape-finder only sees four-sided shapes. Every other shape is Waj's goal.
+### Interfaces
 
-**Still open:** each drawer's maximum travel, interior height, knob diameter and how far the knob sticks out (Sandeep measures these); armfarm5's address and API keys, for its env file (`.env.arm2`).
+Defined in `worldarm/schema.py`. A robot implements `execute(action) -> Observation`.
+- **Actions:** `observe_table | open(k) | close(k) | pick(color) | place(k)`.
+- **Observation facts:** `holding`, `drawer_open:<k>`, `contents:<k>`, `on_table`.
+- **A fact you don't measure, you leave out:** it can't cause a false surprise.
+- **Chapter 2 adds:**
+  - the ball as an object with locations `in_air | table | cup | drawer:<k>`;
+  - actions `hold_open(k)`, `drop`, `toss`, `roll`;
+  - facts `ball_at` and `landing_xy`.
+
+### Organizer and blocks
+
+- **The organizer:** 3 opaque drawers with rounded red knobs. The smooth slides have no stop, so a pulled-out drawer detaches.
+- **Pulls:** each drawer goes to 75% of its maximum travel, never further.
+- **Red only ever means a knob.** The blocks are blue, yellow and green.
+- **The ball:** black rubber. Find it in color (dark on white); depth on black rubber is unreliable.
