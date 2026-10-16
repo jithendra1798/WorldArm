@@ -30,6 +30,10 @@ from worldarm import connection  # loads .env first, so its values win over the 
 ARMFARM03_DEFAULTS = {
     "VIAM_VIEW_POSE_FILE": ".pick_place_view_pose.armfarm03.json",
     "VIAM_TAPE_ZONES": "1",                # one source square; the drawers are the destination
+    # Black by brightness alone: on armfarm03 the black block measured V=10 but S=162 (dark pixels
+    # have noisy saturation), so the default "S < 70" test called it green. Green measured V=59.
+    "VIAM_BLACK_MAX_SATURATION": "256",
+    "VIAM_BLACK_MAX_VALUE": "35",
     "VIAM_WALL_SIDE_Y_MM": "500",           # armfarm03's side wall (verify_camera.py)
     "VIAM_WORKSPACE_Y_MIN_MM": "-700",      # armfarm03 works at negative y
     "VIAM_WORKSPACE_Y_MAX_MM": "440",       # stay clear of the side wall at y = 450-550
