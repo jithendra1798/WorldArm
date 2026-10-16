@@ -234,3 +234,4 @@ runs/
 # Viam's hackathon deck is marked confidential; keep it out of the repo
 *Viam Overview.pdf
 state/
+modules/drawer_last_look.json
