@@ -19,8 +19,10 @@ Setup on armfarm03 (once):
 
 import argparse
 import asyncio
+import math
 import os
 import time
+from pathlib import Path
 
 from worldarm import connection  # loads .env first, so its values win over the defaults below
 
@@ -39,6 +41,7 @@ ARMFARM03_DEFAULTS = {
 for key, value in ARMFARM03_DEFAULTS.items():
     os.environ.setdefault(key, value)
 
+import cv2  # noqa: E402
 import pick_place_cubes as ppc  # noqa: E402  (needs the settings above)
 from viam.components.arm import Arm  # noqa: E402
 from viam.components.camera import Camera  # noqa: E402
@@ -60,6 +63,29 @@ def log_step(logger, n, kind, ok, t0, detail, color=None, drawer=None, note=""):
         "surprises": [] if ok else [{"key": kind, "expected": True, "observed": False, "note": note}],
         "ignored_surprises": [],
     })
+
+
+def describe(scene, assignment: dict[str, int]) -> str:
+    """One line about what a scan saw: the square and each block's color."""
+    if not scene.zones:
+        return "no blue square in view"
+    objs = [o for z in scene.zones for o in z.objects]
+    if not objs:
+        return "the square is empty"
+    names = ", ".join(o.color_name if o.color_name in assignment else f"{o.color_name} (not sorted)" for o in objs)
+    return f"{len(objs)} block(s) in the square: {names}"
+
+
+def draw(scene, path: Path) -> None:
+    """Save the scan with the square outlined and each block labeled."""
+    vis = scene.color.copy()
+    for z in scene.zones:
+        cv2.polylines(vis, [z.corners], True, (0, 0, 255), 3)
+        for o in z.objects:
+            cv2.circle(vis, o.pixel, 14, (0, 255, 255), 3)
+            cv2.putText(vis, o.color_name, (o.pixel[0] + 16, o.pixel[1] + 6), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
+                        (0, 0, 255), 2)
+    cv2.imwrite(str(path), vis)
 
 
 def ask_truth(assignment: dict[str, int]) -> dict:
@@ -88,7 +114,7 @@ class Bench:
         self.world = ppc.workcell_world_state(include_ceiling=True,
                                               table_keep_out_mm=ppc.setting("VIAM_TABLE_KEEP_OUT_MM", 0.0))
 
-    async def scan(self):
+    async def scan(self, assignment: dict[str, int], save_to: Path | None = None):
         """Overview pose -> scene. Returns (scene, source square) or (scene, None) if it's empty."""
         await ppc.open_gripper_for_pick(self.gripper)
         await ppc.return_to_view_pose(self.m, self.arm, self.motion, self.gripper_name, self.world,
@@ -96,17 +122,22 @@ class Bench:
         await ppc.with_timeout(self.arm.do_command({"set_speed": self.cfg["VIAM_APPROACH_SPEED_DEGS_PER_SEC"]}),
                                10.0, "set approach speed")
         scene = await ppc.capture_scene(self.m, self.camera, self.camera_name)
+        print(f"  saw: {describe(scene, assignment)}")
+        if save_to is not None:
+            draw(scene, save_to)
         source = max(scene.zones, key=lambda z: len(z.objects))
         return scene, (source if source.objects else None)
 
     async def episode(self, assignment: dict[str, int], logger) -> tuple[str, str, int]:
-        n, done = 0, set()
+        n, done, looks = 0, set(), 0
         while True:
-            _, source = await self.scan()
+            looks += 1
+            scene, source = await self.scan(assignment, Path(logger.dir) / f"look-{looks}.jpg")
             todo = [o for o in (source.objects if source else [])
                     if o.color_name in assignment and o.color_name not in done]
             if not todo:
-                return "done", f"handled {sorted(done) or 'nothing'}", n
+                why = "sorted " + ", ".join(sorted(done)) if done else f"nothing to sort ({describe(scene, assignment)})"
+                return "done", why, n
             obj = min(todo, key=lambda o: assignment[o.color_name])
             color, k = obj.color_name, assignment[obj.color_name]
             done.add(color)  # one attempt per block per episode: a failure is a failure
@@ -158,9 +189,21 @@ async def main() -> None:
     assignment = parse_assignment(os.getenv("WORLDARM_ASSIGNMENT", "green:1,yellow:2,black:3"))
 
     async with await connection.connect() as machine:
-        if args.teach_view:  # read-only: saves where the arm is now
+        if args.teach_view:  # read-only: checks the view, then saves where the arm is now
             gripper_name = connection.env("VIAM_GRIPPER")
             pose = (await machine.get_pose(gripper_name, destination_frame="world")).pose
+            tilt = math.degrees(math.acos(max(-1.0, min(1.0, -pose.o_z))))
+            if tilt > 25:
+                raise SystemExit(f"Not saved: the gripper is tilted {tilt:.0f} deg from straight down. Point the "
+                                 "wrist camera straight down at the blue square, about 40 cm above it.")
+            camera_name = connection.env("VIAM_CAMERA")
+            try:
+                scene = await ppc.capture_scene(machine, Camera.from_robot(machine, camera_name), camera_name)
+            except RuntimeError as e:
+                raise SystemExit(f"Not saved: the wrist camera doesn't see a usable blue square here ({e}).")
+            Path("captures").mkdir(exist_ok=True)
+            draw(scene, Path("captures") / "teach_view.jpg")
+            print(f"Sees: {describe(scene, assignment)}   (picture: captures/teach_view.jpg)")
             ppc.save_view_pose(pose)
             print(f"Saved the overview pose to {ppc.VIEW_POSE_PATH}: {ppc.fmt_pose(pose)}")
             return
@@ -180,7 +223,8 @@ async def main() -> None:
             raise SystemExit("Cancelled.")
 
         if args.preview:
-            _, source = await bench.scan()
+            _, source = await bench.scan(assignment, Path("captures") / "preview.jpg")
+            print("  picture: captures/preview.jpg")
             for o in (source.objects if source else []):
                 plan = f"drawer {assignment[o.color_name]}" if o.color_name in assignment else "not sorted"
                 print(f"  {o.color_name:<7} height {o.height_mm:.0f} mm at {ppc.fmt_pose(o.center_world)} -> {plan}")
