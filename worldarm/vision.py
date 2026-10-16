@@ -1,4 +1,4 @@
-"""Block perception on the real arm. Owner: perception track.
+"""Block perception on the real arm.
 
 v0 reads 3D objects from the vision-segment service (shape-finder → detections-to-segments), so
 it only sees squares and rectangles. Improve or replace `detect_blocks`, but keep its return

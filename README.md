@@ -92,11 +92,9 @@ The `worldarm/` package:
 | `planner.py` | `Goal` (`sort`, `find:<color>`); `next_action`; `satisfied` |
 | `episode.py` | The plan → predict → act → observe → correct loop, including the `--blind` ablation |
 | `sim.py` | `FakeRobot`: true world, seeded failure injection, hidden-hand moves |
-| `robot.py` | `ViamRobot`: wires vision and the skills into the `execute(action)` interface; bins mode. **Not yet validated on hardware.** |
-| `vision.py`, `pick.py` | Find blocks with 3D positions; pick one up (Waj) |
-| `drawers.py` | Open a drawer to its 75% mark, and close it (Riyaj) |
-| `placing.py` | Put the held block into its drawer (Sandeep) |
-| `manipulation.py` | Shared arm helpers: saved poses, safety-checked moves, gripper, recording playback |
+| `robot.py` | `ViamRobot`: wires vision and the arm skills into the `execute(action)` interface; bins mode. **Not yet validated on hardware.** |
+| `vision.py` | `detect_blocks`: blocks with 3D positions from the vision-segment service |
+| `manipulation.py` | Arm skills: pick, place, open and close a drawer; saved poses, safety-checked moves, recording playback |
 | `safety.py` | Our own floor and workspace check before every computed move |
 | `config.py` | Resource names and limits from the env file |
 | `logger.py`, `metrics.py` | `runs/` logs (with git commit) and the scoreboard |

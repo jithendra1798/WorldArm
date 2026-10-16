@@ -1,7 +1,13 @@
-"""Shared arm building blocks for the skills in pick.py, drawers.py and placing.py. Owner: Jithendra.
+"""Arm skills on the real arm.
 
-Saved poses, safety-checked moves, gripper helpers and recording playback. Every computed move
-goes through the safety check. Not yet validated on hardware: test with someone on the E-stop.
+v0, built on reused Viam pieces (docs/viam-config.md):
+  pick_block    the workshop pattern: approach above the block, descend, grab, lift
+  place         go to `drop-k`, open
+  open_drawer   `knob-k-pre` → recording grasp-k → grab → recording pull-k → open → back off
+  close_drawer  close the fingers → recording push-k (starts at drop-k)
+
+Each skill returns an Observation with the facts it measured. Every computed move goes through
+the safety check. Not yet validated on hardware: test with someone on the E-stop.
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ from viam.services.motion import MotionClient
 
 from .config import Config
 from .safety import check_gripper_target
+from .schema import Observation
 
 
 class SkillError(RuntimeError):
@@ -38,6 +45,8 @@ class Manipulator:
         self.gripper = Gripper.from_robot(machine, cfg.gripper)
         self.motion = MotionClient.from_robot(machine, "builtin")
         self.held: str | None = None  # color we believe is in the gripper (the sensor can't tell colors)
+
+    # --- building blocks ---------------------------------------------------------------------
 
     async def go(self, pose_name: str) -> None:
         """Replay a saved arm-position-saver pose ("go to" = position 2)."""
@@ -77,3 +86,60 @@ class Manipulator:
                 raise SkillError(f"playback {session!r} timed out after {timeout_s:.0f} s")
         if readings.get("last_error"):
             raise SkillError(f"playback {session!r}: {readings['last_error']}")
+
+    # --- skills ------------------------------------------------------------------------------
+
+    async def pick_block(self, block: dict) -> Observation:
+        """Pick a block from `vision.detect_blocks` while the arm is still at the pose it was seen from."""
+        # Approach above the block center in the camera frame (camera z points at the table), then
+        # descend until the fingertips reach the block center.
+        c = block["center"]
+        approach_cam = Pose(x=c.x, y=c.y, z=c.z - self.cfg.approach_mm,
+                            o_x=c.o_x, o_y=c.o_y, o_z=c.o_z, theta=c.theta)
+        approach = (await self.machine.transform_pose(
+            PoseInFrame(reference_frame=block["frame"], pose=approach_cam), "world")).pose
+        grasp = along_z(approach, self.cfg.approach_mm - self.cfg.limits.fingertip_mm)
+        check_gripper_target(grasp, self.cfg.limits)  # check both before moving at all
+
+        await self.move_gripper(approach)
+        await self.gripper.open()
+        await self.settle()
+        await self.move_gripper(grasp)
+        await self.gripper.grab()
+        await self.settle()
+        await self.move_gripper(approach)  # lift
+        self.held = block["color"] if await self.holding() else None
+        return Observation(facts={"holding": self.held},
+                           detail={"block": block, "approach": approach, "grasp": grasp})
+
+    async def place(self, k: int) -> Observation:
+        await self.go(f"drop-{k}")
+        await self.gripper.open()
+        await self.settle()
+        if not await self.holding():
+            self.held = None
+        return Observation(facts={"holding": self.held})
+
+    async def open_drawer(self, k: int) -> Observation:
+        await self.go(f"knob-{k}-pre")
+        await self.gripper.open()
+        await self.settle()
+        await self.play(f"grasp-{k}")
+        await self.gripper.grab()
+        await self.settle()
+        if not await self.holding():
+            await self.gripper.open()
+            await self.back_off()
+            return Observation(facts={f"drawer_open:{k}": False},
+                               detail={"reason": "fingers did not close on the knob"})
+        await self.play(f"pull-{k}")
+        await self.gripper.open()
+        await self.settle()
+        await self.back_off()
+        return Observation(detail={"knob_grabbed": True})
+
+    async def close_drawer(self, k: int) -> Observation:
+        await self.gripper.grab()  # close the fingers to push with
+        await self.settle()
+        await self.play(f"push-{k}")
+        return Observation(detail={"pushed": True})

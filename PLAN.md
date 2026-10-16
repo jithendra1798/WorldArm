@@ -14,10 +14,10 @@ The task splits into the robot's three skills, plus the memory and the loop that
 
 | | Owner | Goal | Files | Score | Demo moment |
 |---|---|---|---|---|---|
-| **1. Find and pick up any block** | **Waj** | Find every block on the table, whatever its shape, and pick it up | `worldarm/vision.py` `pick.py` `perception.py` `frames.py`; new `eval_perception.py` | Detection recall, color accuracy, position error (mm); pick success per shape | Cylinders and triangles get sorted, not just cubes |
-| **2. Open and close the drawers** | **Riyaj** | Pull each drawer to **75% of its travel, never further**, and push it closed | `worldarm/drawers.py` `safety.py`; knob poses and recordings | Open success (within ±10 mm of the 75% mark); close success; drawers pulled out: 0 | Drawers opening smoothly to the mark |
-| **3. Sort the blocks into the drawers by color** | **Sandeep** | Put each block into its color's drawer and confirm it landed there | `worldarm/placing.py`; drop poses; the color → drawer assignment | Place success (seen in the right drawer); share of misses caught | Each color in its own drawer, confirmed on screen |
-| **4. World model, integration & demo** | **Jithendra** | Remember what's in closed drawers, notice tampering, find things; run the whole loop on both arms; measure and present | `worldarm/world_model.py` `planner.py` `episode.py` `robot.py` `manipulation.py` `sim.py`; `run_episode.py` `try_skill.py` `scoreboard.py`; docs | End-to-end success judged on where the blocks really are; belief accuracy; surprise precision and recall | "Where's blue?" and the surprise |
+| **1. Find and pick up any block** | **Waj** | Find every block on the table, whatever its shape, and pick it up | `worldarm/vision.py` `perception.py` `frames.py`; `pick_block` in `manipulation.py`; new `eval_perception.py` | Detection recall, color accuracy, position error (mm); pick success per shape | Cylinders and triangles get sorted, not just cubes |
+| **2. Open and close the drawers** | **Sandeep** | Pull each drawer to **75% of its travel, never further**, and push it closed | `open_drawer` and `close_drawer` in `worldarm/manipulation.py`; `safety.py`; knob poses and recordings | Open success (within ±10 mm of the 75% mark); close success; drawers pulled out: 0 | Drawers opening smoothly to the mark |
+| **3. Sort the blocks into the drawers by color** | **Riyaj** | Put each block into its color's drawer and confirm it landed there | `place` in `worldarm/manipulation.py`; drop poses; the color → drawer assignment | Place success (seen in the right drawer); share of misses caught | Each color in its own drawer, confirmed on screen |
+| **4. World model, integration & demo** | **Jithendra** | Remember what's in closed drawers, notice tampering, find things; run the whole loop on both arms; measure and present | `worldarm/world_model.py` `planner.py` `episode.py` `robot.py` `sim.py`; `run_episode.py` `try_skill.py` `scoreboard.py`; docs | End-to-end success judged on where the blocks really are; belief accuracy; surprise precision and recall | "Where's blue?" and the surprise |
 
 **Jithendra's arm work:**
 - Bring up every skill on the arm with its owner.
@@ -27,12 +27,12 @@ The task splits into the robot's three skills, plus the memory and the loop that
 
 **Shared files:**
 - `worldarm/schema.py` (actions and fact keys) changes only at a sync. Adding a new fact key is fine; just announce it.
-- `worldarm/manipulation.py` holds the shared arm helpers: saved poses, safe moves, the gripper, recording playback. Ask Jithendra before changing it.
+- `worldarm/manipulation.py` is shared by Waj, Sandeep and Riyaj. Each of you changes only your own skill function, and pulls before editing. The helpers at the top (saved poses, safe moves, the gripper, recording playback) change only after asking Jithendra.
 
 ### Arms
 
-- **Arm A:** armfarm03 with the drawer organizer. This is Riyaj's and Sandeep's arm.
-- **Arm B:** the second machine (name TBD) with three open bins. Set `WORLDARM_CONTAINERS=bins` in its env file. This is Waj's arm; Sandeep also develops the drawer check on its bins.
+- **Arm A:** armfarm03 with the drawer organizer. This is Sandeep's and Riyaj's arm.
+- **Arm B:** armfarm5 with three open bins. Set `WORLDARM_CONTAINERS=bins` in its env file. This is Waj's arm; Riyaj also develops the drawer check on its bins.
 
 Only one person drives an arm at a time, and the driver stays at the arm with the E-stop in reach for every motion. **Two people** are needed for manual-mode recording and for the first run of any new motion.
 
@@ -40,15 +40,15 @@ Only one person drives an arm at a time, and the driver stays at the arm with th
 
 | Time | Arm A (drawers) | Arm B (bins) | Off the arm |
 |---|---|---|---|
-| 1:30–2:30 | **Riyaj + Sandeep:** tape the organizer down; measure each drawer's maximum travel and mark 75% on its side; test by hand (**G1**); save `home-pose`, `table-view`, `organizer-view`, `knob-1..3-pre`, then open each drawer to its mark by hand and save `drop-1..3` | **Waj + Jithendra:** add the services to *both* machines in the Viam app; Arm B env file and `verify_camera.py`; save Arm B poses; `--dry-run` (**G2**) | — |
-| 2:30–3:30 | **Riyaj + Sandeep:** record `grasp-k`, `pull-k` (to the mark) and `push-k` for each drawer; replay each once | **Waj:** ground-truth sheet and perception test set (every shape) | **Jithendra:** world model in simulation (hidden-hand protocol) |
-| 3:30–4:30 | **Riyaj:** `try_skill.py open k` and `close k`, 3× per drawer | **Jithendra + Waj:** `try_skill.py observe`, then `pick blue`, then `open 1 pick blue place 1` | **Sandeep:** the drawer check, on saved captures. **Waj:** shape-finder baseline |
+| 1:30–2:30 | **Sandeep + Riyaj:** tape the organizer down; measure each drawer's maximum travel and mark 75% on its side; test by hand (**G1**); save `home-pose`, `table-view`, `organizer-view`, `knob-1..3-pre`, then open each drawer to its mark by hand and save `drop-1..3` | **Waj + Jithendra:** add the services to *both* machines in the Viam app; Arm B env file and `verify_camera.py`; save Arm B poses; `--dry-run` (**G2**) | — |
+| 2:30–3:30 | **Sandeep + Riyaj:** record `grasp-k`, `pull-k` (to the mark) and `push-k` for each drawer; replay each once | **Waj:** ground-truth sheet and perception test set (every shape) | **Jithendra:** world model in simulation (hidden-hand protocol) |
+| 3:30–4:30 | **Sandeep:** `try_skill.py open k` and `close k`, 3× per drawer | **Jithendra + Waj:** `try_skill.py observe`, then `pick blue`, then `open 1 pick blue place 1` | **Riyaj:** the drawer check, on saved captures. **Waj:** shape-finder baseline |
 | 4:30 | **Sync** | | |
-| 4:30–5:15 | **Sandeep + Riyaj:** `try_skill.py open k pick <color> place k close k` for each drawer | **Jithendra:** first full episode on the bins (**G3**) | **Waj:** depth-first detector |
-| 5:15–6:00 | **Jithendra + Riyaj:** first full drawer episode (**G4**) | **Waj:** pick trials, 10 per shape | **Sandeep:** wire the check into `place` |
+| 4:30–5:15 | **Riyaj + Sandeep:** `try_skill.py open k pick <color> place k close k` for each drawer | **Jithendra:** first full episode on the bins (**G3**) | **Waj:** depth-first detector |
+| 5:15–6:00 | **Jithendra + Sandeep:** first full drawer episode (**G4**) | **Waj:** pick trials, 10 per shape | **Riyaj:** wire the check into `place` |
 | 6:00–7:00 | **Dinner + sync:** the v0 numbers on the scoreboard become everyone's starting numbers | | |
-| 7:00–8:00 | **Riyaj:** travel measurement, straight-line pull | **Waj:** any-shape pick, live | **Sandeep:** release height and position. **Jithendra:** demo UI |
-| 8:00–8:45 | **Sandeep:** place and check on the drawers | **Jithendra:** logged episodes, hidden-hand runs, **backup video** | **Riyaj, Waj:** fixes |
+| 7:00–8:00 | **Sandeep:** travel measurement, straight-line pull | **Waj:** any-shape pick, live | **Riyaj:** release height and position. **Jithendra:** demo UI |
+| 8:00–8:45 | **Riyaj:** place and check on the drawers | **Jithendra:** logged episodes, hidden-hand runs, **backup video** | **Sandeep, Waj:** fixes |
 | 8:45 | **Sync:** push everything; agree tomorrow's first task (**G5**) | | |
 
 **Saturday**
@@ -56,8 +56,8 @@ Only one person drives an arm at a time, and the driver stays at the arm with th
 | Time | Arm A (drawers) | Arm B (bins) | Off the arm |
 |---|---|---|---|
 | 9:30 | **Standup at the scoreboard** | | |
-| 9:45–11:00 | **Riyaj** (to 10:20), then **Sandeep** | **Waj** | **Jithendra:** probabilistic belief, demo UI |
-| 11:00–12:30 | **Jithendra:** hidden-hand runs (H3), "where's blue?", full drawer episodes. Riyaj and Sandeep nearby for fixes | **Sandeep** (to 11:45): H1 runs, checks vs. `--blind`. Then **Waj:** any-shape episodes | |
+| 9:45–11:00 | **Sandeep** (to 10:20), then **Riyaj** | **Waj** | **Jithendra:** probabilistic belief, demo UI |
+| 11:00–12:30 | **Jithendra:** hidden-hand runs (H3), "where's blue?", full drawer episodes. Sandeep and Riyaj nearby for fixes | **Riyaj** (to 11:45): H1 runs, checks vs. `--blind`. Then **Waj:** any-shape episodes | |
 | 12:30 | **Feature freeze (G6).** Lunch. Jithendra runs the final evaluation on frozen code. | | |
 | 1:30–2:30 | Results slide: each owner gives one row. Demo UI polish. | | |
 | 2:30–3:30 | Rehearse the demo twice, with one person trying to break it | | |
@@ -67,10 +67,10 @@ Only one person drives an arm at a time, and the driver stays at the arm with th
 
 | | When | Owner | Passes when | If it fails |
 |---|---|---|---|---|
-| **G1** | Fri 2:30 | Riyaj | By hand: the fingers hold the knob stem; the drawer pulls to its 75% mark without the organizer sliding; with a block inside, the open drawer doesn't tip | Pull less (as far as is safe), or Arm A also uses bins with lids |
+| **G1** | Fri 2:30 | Sandeep | By hand: the fingers hold the knob stem; the drawer pulls to its 75% mark without the organizer sliding; with a block inside, the open drawer doesn't tip | Pull less (as far as is safe), or Arm A also uses bins with lids |
 | **G2** | Fri 2:30 | Waj | `run_episode.py --dry-run` sees all three colors (cubes and bars) from `table-view` on both arms | Waj writes a color-threshold detector first |
 | **G3** | Fri 5:15 | Jithendra | First logged real episode on Arm B (bins) | Run single skills with `try_skill.py` and fix the first failure |
-| **G4** | Fri 6:00 | Jithendra, Riyaj, Sandeep | First logged real drawer episode on Arm A; v0 numbers on the scoreboard | Use Arm B's numbers as the baseline; drawers get Saturday morning |
+| **G4** | Fri 6:00 | Jithendra, Sandeep, Riyaj | First logged real drawer episode on Arm A; v0 numbers on the scoreboard | Use Arm B's numbers as the baseline; drawers get Saturday morning |
 | **G5** | Fri 8:45 | Jithendra | ≥10 real episodes logged, backup video recorded, everything pushed | — |
 | **G6** | Sat 12:30 | Everyone | Feature freeze: after this, only fixes | — |
 
@@ -92,18 +92,18 @@ Only one person drives an arm at a time, and the driver stays at the arm with th
 
 **Then**
 - [ ] Depth-first detector in `vision.py`, **same return format**, covering cylinders and triangles
-- [ ] Grip axis per block in `pick.py`: across two parallel faces. For a cylinder that's across its diameter; for a triangular prism, across its two triangular ends.
+- [ ] Grip axis per block in `pick_block`: across two parallel faces. For a cylinder that's across its diameter; for a triangular prism, across its two triangular ends.
 - [ ] Retry a failed grab once, from a fresh detection
 
 **Score:** recall, color accuracy and position error on the test set; pick success per shape on the arm. Target: ≤ 5 mm median, 100% color, ≥ 95% picks for every shape.
 
-### 2. Open and close the drawers (Riyaj)
+### 2. Open and close the drawers (Sandeep)
 
 **The rule:** pull each drawer to **75% of its maximum travel, never further.** The drawers detach, and the arm can't put a detached drawer back.
 
 **Research question:** how reliable are recorded demonstrations? And can a straight-line pull from the knob, measured by the arm itself, hit the 75% mark within ±10 mm just as reliably?
 
-**Until 6 PM (Arm A, with Sandeep)**
+**Until 6 PM (Arm A, with Riyaj)**
 - [ ] Tape the organizer down. Measure each drawer's maximum travel, interior height, knob diameter and how far the knob sticks out, and write them under "Organizer and blocks" below.
 - [ ] Mark 75% on each drawer's side with tape, so everyone can see the target
 - [ ] Test by hand (**G1**)
@@ -121,17 +121,17 @@ Only one person drives an arm at a time, and the driver stays at the arm with th
 
 **Score:** open success (within ±10 mm of the mark), close success, drawers pulled out (must stay 0). Target ≥ 95%.
 
-### 3. Sort the blocks into the drawers by color (Sandeep)
+### 3. Sort the blocks into the drawers by color (Riyaj)
 
 **Research question:** does looking into the drawer after placing catch the misses the gripper sensor can't, and how much does that raise end-to-end success? In simulation it takes success from 51% to 99% (see "The skeleton" below). This is H1 on real hardware.
 
 **Until 6 PM**
-- [ ] On Arm A with Riyaj: open each drawer to its mark by hand and save `drop-1..3` above the exposed part, low enough that the block falls ≤ 3 cm
-- [ ] **Look into a container** (`placing.py`):
+- [ ] On Arm A with Sandeep: open each drawer to its mark by hand and save `drop-1..3` above the exposed part, low enough that the block falls ≤ 3 cm
+- [ ] **Look into a container** (a `look_into(k)` next to `place` in `manipulation.py`):
   - From `drop-k`, back off about 150 mm and run shape-finder's 2D detections (colors only; no depth needed). Report `contents:<k>`.
   - Develop it on saved captures and Arm B's bins first.
   - Check that the drawer's interior isn't detected as a colored object.
-- [ ] With Riyaj: `try_skill.py open k pick <color> place k close k` for each drawer
+- [ ] With Sandeep: `try_skill.py open k pick <color> place k close k` for each drawer
 
 **Then**
 - [ ] Wire the check into `place` (and into `open`, for the world model) with Jithendra
@@ -168,7 +168,7 @@ Only one person drives an arm at a time, and the driver stays at the arm with th
 
 ### Rules
 
-1. **Own your files.** Ask before changing someone else's. Wiring a new measurement into `robot.py` is a one-line change; tell Jithendra.
+1. **Own your files and functions.** In `manipulation.py`, change only your own skill. Ask before changing anything else of someone's. Wiring a new measurement into `robot.py` is a one-line change; tell Jithendra.
 2. **Branches.** Work on `<name>/<thing>`. Before merging to `main`, `python -m pytest` must pass and `python run_episode.py --fake` must end `done`. `git pull --rebase` often.
 3. **No unlogged experiments.** Every real run goes through `run_episode.py` or `try_skill.py`; the results slide comes from `runs/`.
 4. **A change counts when the number moves:** on real runs (or the perception test set), with n stated. Note the number before and after.
@@ -218,12 +218,12 @@ Configuration for the reused pieces: **[docs/viam-config.md](docs/viam-config.md
 
 **Status (Fri 1:30 PM):**
 - Runs end to end in simulation (`python run_episode.py --fake`); 26 tests pass.
-- The real-arm code is split by owner: `vision.py` and `pick.py` (Waj), `drawers.py` (Riyaj), `placing.py` (Sandeep), and `robot.py` + `manipulation.py` (Jithendra). It is **not yet validated on hardware**.
+- The real-arm code: `vision.py` finds blocks, `manipulation.py` holds the arm skills (pick, place, open, close), and `robot.py` wires them together. It is **not yet validated on hardware**.
 - `try_skill.py` is the bring-up tool.
 
 ```
-worldarm/  schema · world_model · planner · episode · sim · robot · manipulation
-           vision · pick · drawers · placing · safety · config · logger · metrics
+worldarm/  schema · world_model · planner · episode · sim · robot · vision · manipulation
+           safety · config · logger · metrics
 run_episode.py   one full episode: --fake | --dry-run | real;  --goal sort | find:<color>;  --blind
 try_skill.py     a short script of skills on a real arm, checked and logged (bring-up)
 scoreboard.py    success rates with 95% intervals, per-action results, surprise counts
@@ -238,7 +238,7 @@ teach.py         manual-mode helper: gripper open/grab, pose readout, captures
 | Real v0: gripper sensor and table only | 51% | 41–61% |
 | None (`--blind`) | 38% | 29–48% |
 
-These failure rates are assumptions, and the simulated checks never make mistakes. What it does show is where checking helps most: **looking into the drawer**, which is Sandeep's first task.
+These failure rates are assumptions, and the simulated checks never make mistakes. What it does show is where checking helps most: **looking into the drawer**, which is Riyaj's first task.
 
 **Version 0 of each stage:**
 
@@ -289,4 +289,4 @@ For a bin (Arm B, `WORLDARM_CONTAINERS=bins`), `open` and `close` do nothing, so
 - **Tape the organizer down.**
 - **v0 blocks are cubes and bars,** because shape-finder only sees four-sided shapes. Every other shape is Waj's goal.
 
-**Still open:** each drawer's maximum travel, interior height, knob diameter and how far the knob sticks out (Riyaj measures these); the second arm's machine name and address.
+**Still open:** each drawer's maximum travel, interior height, knob diameter and how far the knob sticks out (Sandeep measures these); armfarm5's address and API keys, for its env file (`.env.arm2`).
