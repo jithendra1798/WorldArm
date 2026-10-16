@@ -47,7 +47,7 @@ The `erh:vmodutils` module is already installed, because the obstacles use it. A
 | `table-view` | Camera pointing straight down, about 38 cm above the block area |
 | `organizer-view` | Camera facing the drawer fronts from about 30 cm away |
 | `knob-1-pre`, `knob-2-pre`, `knob-3-pre` | Gripper horizontal and **open**, about 5 cm in front of knob k (1 = top) |
-| `drop-1`, `drop-2`, `drop-3` | Gripper above the exposed part of drawer k **when it's open** |
+| `drop-1`, `drop-2`, `drop-3` | Gripper above the exposed part of drawer k **when it's open to its 75% mark** (open it by hand) |
 
 On Arm B, with bins instead of drawers, only `home-pose`, `table-view` and `drop-1..3` are needed (one drop above each bin). Also set `WORLDARM_CONTAINERS=bins` in that arm's env file, so open and close do nothing.
 
@@ -82,7 +82,7 @@ Add the registry module **`devrel:arm-recorder`**, then this sensor component. I
 | Session | Start | Move by hand | End |
 |---|---|---|---|
 | `grasp-k` | At `knob-k-pre`, gripper open | Straight forward until the fingers surround the knob's **stem** | Fingers around the stem (don't grab yet) |
-| `pull-k` | Fingers closed on the stem (`teach.py` → `g`) | Straight back, 50–60% of the drawer's depth | Drawer open; then `o` to release |
+| `pull-k` | Fingers closed on the stem (`teach.py` → `g`) | Straight back to the 75% mark, **never further**: the drawer detaches | Drawer at its mark; then `o` to release |
 | `push-k` | At `drop-k` (above the open drawer), gripper closed | Out past the drawer front, down to knob height, then straight in until the drawer is flush | Drawer closed |
 
 ```json
@@ -106,4 +106,4 @@ Add the registry module **`devrel:arm-recorder`**, then this sensor component. I
 
 **Picking a block by hand:** guide the gripper above the block with the fingers lined up against two parallel faces, lower to mid-height, `g`, then `h` should say `holding: True`, then lift.
 
-**Pulling a drawer by hand:** gripper horizontal, fingers around the knob stem behind the head, `g`, then pull straight back. Watch that the organizer doesn't slide.
+**Pulling a drawer by hand:** gripper horizontal, fingers around the knob stem behind the head, `g`, then pull straight back to the 75% mark and no further. Watch that the organizer doesn't slide.

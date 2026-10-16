@@ -1,5 +1,5 @@
-"""The real arm: wires perception (vision.py) and arm skills (manipulation.py) into the Robot
-interface the episode loop uses. Owner: integration.
+"""The real arm: wires perception (vision.py) and the skills (pick.py, drawers.py, placing.py)
+into the Robot interface the episode loop uses. Owner: Jithendra.
 
 New measurements are wired in here: a skill's Observation can be extended with more facts (for
 example `contents:<k>` from looking into a drawer) without touching the world model.
@@ -10,6 +10,7 @@ from __future__ import annotations
 from viam.robot.client import RobotClient
 from viam.services.vision import VisionClient
 
+from . import drawers, pick, placing
 from .config import Config
 from .manipulation import Manipulator
 from .schema import Act, Action, Observation
@@ -43,18 +44,18 @@ class ViamRobot:
             if not candidates:
                 return Observation(pre_facts={"on_table": seen}, facts={"holding": None},
                                    detail={"reason": f"{action.color} not detected"})
-            obs = await self.skills.pick_block(max(candidates, key=lambda b: b["points_bytes"]))
+            obs = await pick.pick_block(self.skills, max(candidates, key=lambda b: b["points_bytes"]))
             obs.pre_facts["on_table"] = seen
             return obs
 
         if action.kind is Act.PLACE:
-            return await self.skills.place(action.drawer)
+            return await placing.place(self.skills, action.drawer)
 
         if action.kind in (Act.OPEN, Act.CLOSE):
             if self.cfg.containers == "bins":  # open-top bins: nothing to open or close
                 return Observation(detail={"bins": True})
             if action.kind is Act.OPEN:
-                return await self.skills.open_drawer(action.drawer)
-            return await self.skills.close_drawer(action.drawer)
+                return await drawers.open_drawer(self.skills, action.drawer)
+            return await drawers.close_drawer(self.skills, action.drawer)
 
         raise ValueError(f"unknown action {action}")
