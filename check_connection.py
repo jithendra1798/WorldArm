@@ -1,4 +1,7 @@
-"""Smoke test: connect to the machine and read from the arm, camera and gripper. Moves nothing."""
+"""Connect to the machine and read the arm's current joint positions.
+
+This script only reads state; it does not move the arm.
+"""
 
 import asyncio
 
@@ -17,6 +20,7 @@ async def main():
 
         arm = Arm.from_robot(machine, env("VIAM_ARM"))
         print(f"\nArm end pose: {await arm.get_end_position()}")
+        print(f"Arm joint positions (degrees): {await arm.get_joint_positions()}")
 
         cam = Camera.from_robot(machine, env("VIAM_CAMERA"))
         images, _ = await cam.get_images()

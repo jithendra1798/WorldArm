@@ -154,10 +154,10 @@ class MovingBlocks(Generic, EasyResource):
                     raise RuntimeError("Motion is disabled in this service configuration (enable_motion=false).")
                 if command.get("confirm") is not True:
                     raise RuntimeError("Motion requires DoCommand {'action':'move','confirm':true}.")
-                if margin < 50:
-                    raise RuntimeError("min_tcp_above_table_mm must be at least 50 mm.")
-                if number(self.options, "grasp_tcp_z_offset_mm", 65.0) < 50:
-                    raise RuntimeError("grasp_tcp_z_offset_mm must be at least 50 mm for this setup.")
+                if margin < 40:
+                    raise RuntimeError("min_tcp_above_table_mm must be at least 40 mm.")
+                if number(self.options, "grasp_tcp_z_offset_mm", 45.0) < 35:
+                    raise RuntimeError("grasp_tcp_z_offset_mm must be at least 35 mm for this setup.")
                 for key in ("approach_clearance_mm", "lift_mm", "descent_step_mm"):
                     if number(self.options, key, 25.0) <= 0:
                         raise RuntimeError(f"{key} must be greater than zero.")

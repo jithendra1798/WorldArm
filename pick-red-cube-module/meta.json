@@ -1,0 +1,19 @@
+{
+  "module_id": "hackathons:pick-red-cube",
+  "visibility": "private",
+  "description": "Detect one red cube with Viam color_detector + detections-to-segments, then pick and hold via builtin motion, arm, and gripper. Default DoCommand is preview-only.",
+  "models": [
+    {
+      "api": "rdk:service:generic",
+      "model": "hackathons:pick-red-cube:picker",
+      "markdown_description": "Generic service. DoCommand actions: `preview` (detect only) and `pick` (requires config `enable_pick: true`). Uses existing vision, motion, arm, and gripper resources."
+    }
+  ],
+  "entrypoint": "run.sh",
+  "build": {
+    "setup": "./setup.sh",
+    "build": "./build.sh",
+    "path": "dist/archive.tar.gz",
+    "arch": ["linux/amd64", "linux/arm64"]
+  }
+}

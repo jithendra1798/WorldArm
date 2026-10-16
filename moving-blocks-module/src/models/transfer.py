@@ -488,7 +488,9 @@ async def move_one_object(obj: DetectedObject, destination: Pose, arm: Arm, grip
     logger.info("Grasping object at %s (height %.1f mm); dropping at %s",
                 fmt_pose(obj.center_world), obj.height_mm, fmt_pose(place))
 
-    await with_timeout(gripper.open(), 30.0, "opening gripper")
+    # Narrow open only — full open swings tips into neighboring cubes.
+    pick_open = number(options, "pick_open_position", 480.0)
+    await with_timeout(gripper.do_command({"set": float(pick_open)}), 20.0, "narrow open for pick")
     await move_gripper(motion, gripper_name, pregrasp, world_state, linear=False,
                        timeout=timeout, label="pre-grasp", margin_mm=margin_mm)
     step = number(options, "descent_step_mm", 25.0)
@@ -510,7 +512,8 @@ async def move_one_object(obj: DetectedObject, destination: Pose, arm: Arm, grip
                        timeout=timeout, label="travel above destination", margin_mm=margin_mm)
     await move_gripper(motion, gripper_name, place, world_state, linear=True,
                        timeout=timeout, label="lower into destination", margin_mm=margin_mm)
-    await with_timeout(gripper.open(), 30.0, "releasing object")
+    release_open = min(pick_open, number(options, "release_open_position", 420.0))
+    await with_timeout(gripper.do_command({"set": float(release_open)}), 20.0, "partial release")
     holding = await with_timeout(gripper.is_holding_something(), 10.0, "verifying release")
     if holding.is_holding_something:
         raise RuntimeError("Gripper still reports holding an object after release.")

@@ -1,0 +1,19 @@
+{
+  "module_id": "hackathons:catch-thrown-object",
+  "visibility": "private",
+  "description": "Attempt a soft intercept/catch of a colored object in a tight catch volume. Motion is disabled by default; hard speed/volume/session caps and an explicit safety acknowledgment are required before any catch move.",
+  "models": [
+    {
+      "api": "rdk:service:generic",
+      "model": "hackathons:catch-thrown-object:catcher",
+      "markdown_description": "DoCommand: `preview` (track only), `arm_ready` (slow move to ready pose), `catch` (requires `enable_catch` + safety ack), `abort` (stop arm). Soft throws only; refuses fast/out-of-volume trajectories."
+    }
+  ],
+  "entrypoint": "run.sh",
+  "build": {
+    "setup": "./setup.sh",
+    "build": "./build.sh",
+    "path": "dist/archive.tar.gz",
+    "arch": ["linux/amd64", "linux/arm64"]
+  }
+}
