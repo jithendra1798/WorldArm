@@ -11,9 +11,9 @@ from viam.components.camera import Camera
 from viam.components.gripper import Gripper
 from viam.proto.common import Pose, PoseInFrame
 
-from connection import connect, env
-from frames import frame_to_world, to_world
-from perception import capture, deproject, pixel_to_cam
+from worldarm.connection import connect, env
+from worldarm.frames import frame_to_world, to_world
+from worldarm.perception import capture, deproject, pixel_to_cam
 
 OBSTACLES = ["table", "wall-front", "wall-side", "ceiling"]
 

@@ -226,3 +226,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# WorldArm
+.env.*
+!.env.example
+runs/
+# Viam's hackathon deck is marked confidential; keep it out of the repo
+*Viam Overview.pdf
+state/

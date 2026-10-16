@@ -9,7 +9,7 @@ from viam.components.arm import Arm
 from viam.components.camera import Camera
 from viam.components.gripper import Gripper
 
-from connection import connect, env
+from worldarm.connection import connect, env
 
 
 async def main():
