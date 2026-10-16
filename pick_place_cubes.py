@@ -284,7 +284,8 @@ async def point_to_world(machine, camera_name: str, intrinsics, u: int, v: int, 
 async def localize_objects(machine, scene: Scene, camera_name: str, zone: Zone) -> list[DetectedObject]:
     found: list[DetectedObject] = []
     max_height = setting("VIAM_MAX_OBJECT_HEIGHT_MM", 300.0)
-    max_table_error = setting("VIAM_TABLE_PLANE_TOLERANCE_MM", 35.0)
+    # New overview poses shift the depth→world table estimate; keep this loose.
+    max_table_error = setting("VIAM_TABLE_PLANE_TOLERANCE_MM", 55.0)
     for x, y, w, h, area, local_mask in find_foreground_components(scene.depth, zone):
         u0, v0 = component_center(local_mask)
         u, v = x + u0, y + v0
@@ -413,7 +414,7 @@ async def zone_surface_pose(machine, scene: Scene, camera_name: str, zone: Zone,
     pose = await point_to_world(
         machine, camera_name, scene.intrinsics, u, v, plane_depth_at(zone, u, v)
     )
-    max_table_error = setting("VIAM_TABLE_PLANE_TOLERANCE_MM", 35.0)
+    max_table_error = setting("VIAM_TABLE_PLANE_TOLERANCE_MM", 55.0)
     if abs(pose.z - TABLE_TOP_Z_MM) > max_table_error:
         raise RuntimeError(
             f"Destination table estimate Z={pose.z:.1f} mm conflicts with configured "
@@ -433,6 +434,36 @@ def surface_down_orientation(surface: Pose) -> dict[str, float]:
             f"Destination frame is not facing down (o_z={oz:.3f}); check camera/arm frame calibration."
         )
     return {"o_x": ox, "o_y": oy, "o_z": oz, "theta": float(surface.theta)}
+
+
+GRIPPER_FULL_OPEN = 850.0
+
+
+async def gripper_position(gripper: Gripper) -> float:
+    response = await with_timeout(gripper.do_command({"get": True}), 10.0, "read gripper position")
+    raw = response.get("pos", response.get("position"))
+    if raw is None:
+        raise RuntimeError("Gripper did not report a position.")
+    return float(raw)
+
+
+async def set_gripper_position(gripper: Gripper, position: float, *, label: str) -> None:
+    position = max(0.0, min(GRIPPER_FULL_OPEN, float(position)))
+    await with_timeout(gripper.do_command({"set": position}), 20.0, label)
+
+
+async def open_gripper_full(gripper: Gripper) -> None:
+    await set_gripper_position(gripper, GRIPPER_FULL_OPEN, label="fully open gripper")
+
+
+async def release_gripper_partial(gripper: Gripper, closed_position: float) -> None:
+    """Open just enough to free the object; keep jaws narrow near neighbors."""
+    extra = setting("VIAM_RELEASE_OPEN_EXTRA", 220.0)
+    target = min(GRIPPER_FULL_OPEN, closed_position + extra)
+    # Never release with a target at/below the closed pose.
+    if target <= closed_position + 40.0:
+        target = min(GRIPPER_FULL_OPEN, closed_position + 120.0)
+    await set_gripper_position(gripper, target, label="partial release open")
 
 
 async def move_to_place_approach(
@@ -512,7 +543,8 @@ async def move_one_object(
     logger.info("Destination %s", fmt_pose(destination))
     logger.info("Grasp TCP %s; release TCP %s", fmt_pose(grasp), fmt_pose(place))
 
-    await with_timeout(gripper.open(), 20.0, "open gripper")
+    # Full open for picking so fingers clear neighboring source objects.
+    await open_gripper_full(gripper)
     await move_gripper(motion, gripper_name, pregrasp, world_state, linear=False,
                        timeout=timeout, label="pre-grasp", table_margin_mm=table_margin)
     # One linear descent — fewer motion stops than stepped waypoints.
@@ -527,6 +559,7 @@ async def move_one_object(
                            timeout=timeout, label="retreat after missed grasp",
                            table_margin_mm=table_margin)
         raise RuntimeError("Gripper did not confirm a grasp; stopping without lifting.")
+    closed_position = await gripper_position(gripper)
 
     await move_gripper(motion, gripper_name, lift, world_state, linear=True,
                        timeout=timeout, label="lift object", table_margin_mm=table_margin)
@@ -538,15 +571,16 @@ async def move_one_object(
     await move_gripper(motion, gripper_name, place_above, world_state, linear=True,
                        timeout=timeout, label="lower into destination zone",
                        table_margin_mm=table_margin)
-    # Open high, then lift straight up before any sideways move so jaws don't
-    # shove already-placed cubes.
-    await with_timeout(gripper.open(), 20.0, "release object")
+    # Partial open frees the object without swinging jaws into neighbors; lift
+    # straight up before any sideways move; fully reopen once clear.
+    await release_gripper_partial(gripper, closed_position)
     await move_gripper(motion, gripper_name, hover, world_state, linear=True,
                        timeout=timeout, label="retreat after release",
                        table_margin_mm=table_margin)
     holding = await with_timeout(gripper.is_holding_something(), 5.0, "verify release")
     if holding.is_holding_something:
         raise RuntimeError("Gripper still reports an object after opening; stopping the sequence.")
+    await open_gripper_full(gripper)
 
 
 def save_view_pose(pose: Pose) -> None:
