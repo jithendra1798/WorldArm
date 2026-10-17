@@ -74,7 +74,6 @@
   "grasp_raise_mm": 10.0,
   "min_tcp_above_table_mm": 55.0,
   "pick_hover_mm": 100.0,
-  "close_pct": 55.0,
   "free_mm": 20.0,
   "jaw_s": 0.151,
   "pick_clearance_mm": 5.0,
@@ -159,5 +158,6 @@
   },
   "bowl_diameter_mm": 300.0,
   "bowl_hold": null,
-  "catch_speed_deg_s": 20.0
+  "catch_speed_deg_s": 20.0,
+  "squeeze_mm": 2.0
 }
