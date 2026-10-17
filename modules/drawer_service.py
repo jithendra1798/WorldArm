@@ -941,6 +941,12 @@ class MyGenericService(Generic, EasyResource):
             return {"success": False, "stage": grip["stage"], "error": grip.get("error"), **log}
         gx, gy = st["closed_grasp"]
         await self._gripper_to(gx, gy, GRASP_Z_MM, grip["wrist"])
+        pos = await self._gpos()
+        if pos is None or not (HOLD_MIN_POS <= pos <= HOLD_MAX_POS):
+            # The knob slipped out of the fingers on the way back: the drawer didn't follow.
+            await self._let_go_and_lift(grip["wrist"])
+            return {"success": False, "stage": "close", "error": "knob slipped during the push; the drawer is "
+                    "probably still open", "grip_pos": pos, **log}
         loads_after = await self._loads()
         fully_closed = None
         if st.get("loads_closed") and loads_after:

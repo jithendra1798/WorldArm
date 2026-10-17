@@ -1,8 +1,10 @@
 """Find blocks on the table from one aligned color + depth frame. Read-only.
 
 Anything standing MIN_HEIGHT_MM..MAX_HEIGHT_MM above the fitted table plane, with a block-sized
-footprint, is a block; it is named by its color. No tape square or mat is needed. Taller things
-(the drawer box, the arm) and anything attached to them are skipped.
+footprint and a painted color, is a block. No tape square or mat is needed. Skipped: taller things (the
+drawer box, the arm) and anything attached to them, unpainted things (table, tape, the box's cream
+plastic), and anything near the box's red knobs (an open drawer's floor). The knobs are reported too,
+so a caller can tell whether every drawer is shut (knob_row).
 """
 
 from __future__ import annotations
@@ -12,13 +14,18 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-MIN_HEIGHT_MM = 8.0           # above the table plane: blocks, not table texture or depth noise
+MIN_HEIGHT_MM = 15.0          # above the table plane: blocks, not depth noise or an open drawer's floor (~10 mm)
 MAX_HEIGHT_MM = 70.0          # taller things are not blocks (drawer box, arm, people)
 MIN_SIDE_MM, MAX_SIDE_MM = 22.0, 130.0  # our blocks are >= 28 mm across; curled tape is smaller
 MIN_DEPTH_MM, MAX_DEPTH_MM = 200, 1500
 DARK_V = 40                   # HSV brightness below this is a dark (black) block ...
 DARK_HEIGHT_MM = 30.0         # ... which often returns no depth (black absorbs the IR): assume this height
 BORDER_PX = 4                 # anything touching the image edge is cut off (or is the gripper's fingertips)
+KNOB_CLEAR_MM = 160.0         # nothing within this of a drawer knob is a block (the box is behind the knobs)
+PAINT_S = 165                 # HSV saturation of block paint. Measured: blocks 205-238; the box's cream plastic
+                              # up to 138 in shadow (yellow's hue), table 4
+MIN_FILL = 0.5                # a block's outline fills its bounding rectangle; a cable loop's doesn't (~0.3)
+ROW_TOLERANCE_MM = 12.0       # shut drawers' knobs lie on one line within this; an open drawer's is ~120 mm out
 
 
 @dataclass
@@ -39,8 +46,8 @@ def name_color(hsv: np.ndarray) -> str:
     h, s, v = (float(x) for x in np.median(hsv.reshape(-1, 3), axis=0))
     if v < 35:
         return "black"   # brightness alone: dark pixels have noisy hue and saturation
-    if s < 60:
-        return "white"
+    if s < PAINT_S:
+        return "white"   # not paint: table, tape, the drawer box's cream plastic
     if h <= 4 or h >= 170:
         return "red"
     if h < 15:
@@ -83,10 +90,13 @@ def _short_side(xy: np.ndarray) -> tuple[float, float, float, np.ndarray]:
     return short_len, long_len, float(np.degrees(np.arctan2(short_vec[1], short_vec[0]))), np.array(rect[0])
 
 
-def find_blocks(color: np.ndarray, depth: np.ndarray, intr, rot: np.ndarray, trans: np.ndarray):
+def find_blocks(color: np.ndarray, depth: np.ndarray, intr, rot: np.ndarray, trans: np.ndarray,
+                report: dict | None = None):
     """Blocks in one aligned frame. `rot`, `trans` map camera mm to world mm (frames.frame_to_world).
 
-    Returns (blocks, table_coef) with table_coef = (a, b, c) of the world table plane.
+    Returns (blocks, table_coef) with table_coef = (a, b, c) of the world table plane. If `report` is
+    given it gets "edge_cut": [{"color", "xy"}] for painted things cut off by the image edge (world x, y
+    of the part in view), and "knobs": world [x, y] of each red knob seen.
     """
     hgt, wid = depth.shape
     valid = (depth > MIN_DEPTH_MM) & (depth < MAX_DEPTH_MM)
@@ -109,10 +119,15 @@ def find_blocks(color: np.ndarray, depth: np.ndarray, intr, rot: np.ndarray, tra
     tall = cv2.dilate((height >= MAX_HEIGHT_MM).astype(np.uint8), np.ones((15, 15), np.uint8))
     hsv = cv2.cvtColor(color, cv2.COLOR_BGR2HSV)
 
-    blocks = []
+    knobs = _knob_points(hsv, index, world)
+
+    def near_knob(xy) -> bool:  # on or in the drawer box: an open drawer's floor, the box's edges
+        return len(knobs) > 0 and float(np.min(np.linalg.norm(knobs - np.asarray(xy)[:2], axis=1))) < KNOB_CLEAR_MM
+
+    blocks, edge_cut = [], []
     count, labels, stats, centroids = cv2.connectedComponentsWithStats(blockish)
     for i in range(1, count):
-        if stats[i, cv2.CC_STAT_AREA] < 150 or _touches_border(stats[i], wid, hgt):
+        if stats[i, cv2.CC_STAT_AREA] < 150:
             continue
         comp = labels == i
         if np.any(comp & (tall > 0)):
@@ -120,16 +135,23 @@ def find_blocks(color: np.ndarray, depth: np.ndarray, intr, rot: np.ndarray, tra
         idx = index[comp & valid]
         if idx.size < 100:
             continue
+        if _touches_border(stats[i], wid, hgt):  # cut off: report it, so the caller can look again
+            name, xy = name_color(hsv[comp]), np.median(world[idx, :2], axis=0)
+            short_mm, long_mm, _, _ = _short_side(world[idx, :2])
+            if (name != "white" and not near_knob(xy) and _fill(comp) >= MIN_FILL
+                    and MIN_SIDE_MM <= short_mm and long_mm <= MAX_SIDE_MM):
+                edge_cut.append({"color": name, "xy": [round(float(xy[0]), 1), round(float(xy[1]), 1)]})
+            continue
         h_mm = float(np.percentile(above[idx], 75))  # robust to edge pixels that land between top and table
         top = idx[above[idx] >= 0.5 * h_mm]          # the footprint from the top face, not the edge skirt
         pts = world[top if top.size >= 30 else idx]
         short_mm, long_mm, short_deg, center_xy = _short_side(pts[:, :2])
-        if not (MIN_SIDE_MM <= short_mm and long_mm <= MAX_SIDE_MM):
+        if not (MIN_SIDE_MM <= short_mm and long_mm <= MAX_SIDE_MM) or _fill(comp) < MIN_FILL:
             continue
         inner = cv2.erode(comp.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
         name = name_color(hsv[inner] if inner.sum() > 30 else hsv[comp])
-        if name == "white":
-            continue  # table texture, tape, cables seen against the table: not a block color
+        if name == "white" or near_knob(center_xy):
+            continue  # not paint (table, tape, cream plastic), or part of the drawer box
         table_z = float(coef[0] * center_xy[0] + coef[1] * center_xy[1] + coef[2])
         blocks.append(Block(
             color=name, pixel=(int(centroids[i][0]), int(centroids[i][1])),
@@ -139,8 +161,45 @@ def find_blocks(color: np.ndarray, depth: np.ndarray, intr, rot: np.ndarray, tra
     for b in blocks:
         found |= (b.mask > 0).astype(np.uint8)
     near_found = cv2.dilate(found, np.ones((31, 31), np.uint8))  # a dark patch beside a block is that block
-    blocks += _dark_blocks(hsv, height, near_found, tall, intr, rot, trans, coef)
+    blocks += [b for b in _dark_blocks(hsv, height, near_found, tall, intr, rot, trans, coef) if not near_knob(b.center)]
+    if report is not None:
+        report.update(edge_cut=edge_cut, knobs=[[round(float(x), 1), round(float(y), 1)] for x, y in knobs])
     return blocks, coef
+
+
+def _knob_points(hsv: np.ndarray, index: np.ndarray, world: np.ndarray) -> np.ndarray:
+    """World x, y of the drawer box's red knobs (saturated red blobs with depth)."""
+    h, s, v = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+    red = (((h <= 6) | (h >= 170)) & (s >= 120) & (v >= 60)).astype(np.uint8)
+    red = cv2.morphologyEx(red, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(red)
+    points = []
+    for i in range(1, count):
+        if stats[i, cv2.CC_STAT_AREA] < 200:
+            continue
+        idx = index[(labels == i) & (index >= 0)]
+        if idx.size >= 20:
+            points.append(np.median(world[idx, :2], axis=0))
+    return np.array(points)
+
+
+def knob_row(knobs) -> tuple[bool | None, float]:
+    """Are all drawers shut? Their knobs then lie on one straight line. Returns (in a row, the farthest
+    knob's distance from the best-fit line in mm); (None, nan) unless exactly three knobs were seen."""
+    pts = np.asarray(knobs, float).reshape(-1, 2)
+    if len(pts) != 3:
+        return None, float("nan")
+    centered = pts - pts.mean(axis=0)
+    normal = np.linalg.svd(centered)[2][1]  # the direction the knobs spread least in
+    off = float(np.max(np.abs(centered @ normal)))
+    return off <= ROW_TOLERANCE_MM, off
+
+
+def _fill(comp: np.ndarray) -> float:
+    """Share of its minimum-area rectangle that a mask covers (pixels)."""
+    ys, xs = np.nonzero(comp)
+    (_, _), (w, h), _ = cv2.minAreaRect(np.column_stack((xs, ys)).astype(np.float32))
+    return xs.size / max(w * h, 1.0)
 
 
 def _touches_border(stat, wid: int, hgt: int) -> bool:
@@ -173,7 +232,7 @@ def _dark_blocks(hsv, height, found, tall, intr, rot, trans, coef) -> list[Block
         t = (a * trans[0] + b * trans[1] + c + h_mm - trans[2]) / (rays[:, 2] - a * rays[:, 0] - b * rays[:, 1])
         xy = trans[:2] + t[:, None] * rays[:, :2]
         short_mm, long_mm, short_deg, center_xy = _short_side(xy)
-        if not (MIN_SIDE_MM <= short_mm and long_mm <= MAX_SIDE_MM):
+        if not (MIN_SIDE_MM <= short_mm and long_mm <= MAX_SIDE_MM) or _fill(comp) < MIN_FILL:
             continue  # cables, gaps and shadows are too thin or too long
         table_z = float(a * center_xy[0] + b * center_xy[1] + c)
         out.append(Block(color="black", pixel=(int(centroids[i][0]), int(centroids[i][1])),
@@ -194,10 +253,10 @@ def color_fraction(color: np.ndarray, center_px: tuple[int, int], half_px: int, 
     hh, ss, vv = hsv[:, 0], hsv[:, 1], hsv[:, 2]
     tests = {
         "black": vv < 35,
-        "red": (vv >= 35) & (ss >= 60) & ((hh <= 4) | (hh >= 170)),
-        "orange": (vv >= 35) & (ss >= 60) & (hh > 4) & (hh < 15),
-        "yellow": (vv >= 35) & (ss >= 60) & (hh >= 15) & (hh < 42),
-        "green": (vv >= 35) & (ss >= 60) & (hh >= 42) & (hh < 95),
-        "blue": (vv >= 35) & (ss >= 60) & (hh >= 95) & (hh < 135),
+        "red": (vv >= 35) & (ss >= PAINT_S) & ((hh <= 4) | (hh >= 170)),
+        "orange": (vv >= 35) & (ss >= PAINT_S) & (hh > 4) & (hh < 15),
+        "yellow": (vv >= 35) & (ss >= PAINT_S) & (hh >= 15) & (hh < 42),
+        "green": (vv >= 35) & (ss >= PAINT_S) & (hh >= 42) & (hh < 95),
+        "blue": (vv >= 35) & (ss >= PAINT_S) & (hh >= 95) & (hh < 135),
     }
     return float(np.mean(tests[name])) if name in tests else 0.0

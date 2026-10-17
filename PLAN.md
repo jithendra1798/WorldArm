@@ -38,9 +38,12 @@ The drawer service is deployed on armfarm03 as `PickBottle`. Waj's pick-and-drop
 2. **Set up armfarm03:**
    - **No tape or mat.** Blocks are found anywhere on the table by their height above the fitted table plane, then named by color (`worldarm/blocks.py`). Black blocks, which return little depth, are found by color.
    - Colors default to **green → 1, yellow → 2, black → 3** (`WORLDARM_ASSIGNMENT`; blue works too). Red means a knob.
+   - **Tape the drawer box to the table.** In Friday's run, pushing drawer 2 shut slid the whole box about 11 cm instead, and the drawer stayed open.
+   - The overview must show all three knobs and the blocks. Keep blocks at least 16 cm from the knobs: anything nearer counts as part of the box.
    - Put the arm at the overview pose and save it: `python sort_bench.py --teach-view`.
 3. **Run:** `python sort_bench.py --preview`, then `python sort_bench.py --episodes 10`.
    - **Per block:** drawer `open` (or reuse it if it's already open) → pick with the wrist turned across the block's short side → contact-checked descent → drop with the long side along the drawer → look into the drawer → `close`.
+   - **Every close is checked by the camera:** the three knobs must be back in a straight row, or the episode stops rather than work around an open drawer. A missed pick is retried with the drawer left open.
    - **Success is judged by the cameras:** every block seen in its drawer, none left on the table, all drawers closed. `--ask-truth` asks you instead.
    - `python scoreboard.py` shows per-step and end-to-end rates.
 4. **Freeze:** tag `v1-sorting` in git and record a backup video. Chapter 2 work then happens on a branch, so v1 can't break.

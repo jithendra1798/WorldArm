@@ -8,10 +8,13 @@ For each block, in drawer order:
              the table, and the block turned at the drawer so its long side runs along the drawer
   check      look into the open drawer for the block's color
   close k    drawer service
+A missed pick is retried with the drawer left open. Every close is checked from the overview: the three
+knobs must be back in a straight row (a push that slides the whole box leaves its drawer out of line).
 At the end it looks at the table again. Success, judged by the cameras: every block seen in its drawer,
 none left on the table, every drawer closed. (--ask-truth asks you instead.)
 
 Blocks are found by height above the table and named by color (worldarm/blocks.py): no tape or mat.
+A block cut off by the edge of the view gets a second look from the overview pose moved toward it.
 Default colors: green -> drawer 1, yellow -> 2, black -> 3 (WORLDARM_ASSIGNMENT=blue:1,yellow:2,green:3 etc.).
 
   python sort_bench.py --teach-view      # save the overview pose: camera straight down at the table
@@ -56,7 +59,7 @@ from viam.services.generic import Generic  # noqa: E402
 from viam.services.motion import MotionClient  # noqa: E402
 
 from modules.drawer_service import DROP_FROM_FACE_MM, GRASP_OUTWARD_MM, KNOB_PROTRUSION_MM, TRAVEL_MM  # noqa: E402
-from worldarm.blocks import color_fraction, find_blocks  # noqa: E402
+from worldarm.blocks import color_fraction, find_blocks, knob_row  # noqa: E402
 from worldarm.config import parse_assignment  # noqa: E402
 from worldarm.contact import ContactGuard  # noqa: E402
 from worldarm.frames import frame_to_world  # noqa: E402
@@ -65,13 +68,17 @@ from worldarm.logger import EpisodeLogger  # noqa: E402
 from worldarm.metrics import rate  # noqa: E402
 from worldarm.perception import capture  # noqa: E402
 
+EDGE_LOOK_SHIFT = 0.6   # second look: move the camera this share of the way toward a block cut off at the edge
+BOX_MOVED_MM = 20.0     # say so when the drawer box has slid this far since the start
+
 
 class Frame:
     """One look through the wrist camera: images, camera pose, and the blocks found."""
 
-    def __init__(self, color, depth, intr, rot, trans, blocks, table):
+    def __init__(self, color, depth, intr, rot, trans, blocks, table, report=None):
         self.color, self.depth, self.intr, self.rot, self.trans = color, depth, intr, rot, trans
         self.blocks, self.table = blocks, table
+        self.report = report or {}  # from find_blocks: "knobs" seen, "edge_cut" blocks
 
     def to_pixel(self, x: float, y: float, z: float) -> tuple[int, int]:
         cam = self.rot.T @ (np.array([x, y, z]) - self.trans)
@@ -94,6 +101,20 @@ def drawer_info(st: dict) -> dict:
     back = TRAVEL_MM + KNOB_PROTRUSION_MM - DROP_FROM_FACE_MM
     return {"drop_point": {"x": knob[0] - pull[0] * back, "y": knob[1] - pull[1] * back, "z": st["knob_z"]},
             "open_dir": pull, "wrist": st.get("wrist")}
+
+
+def box_state(knobs, ref) -> tuple[bool | None, str]:
+    """Every drawer shut, judged from the overview: the three knobs in a straight row. `ref` is the first such
+    row this episode (None before one was seen). Returns (shut, what was seen); shut is None if it can't tell."""
+    in_row, off = knob_row(knobs)
+    if in_row is None:
+        if ref is None:
+            return None, f"{len(knobs)} knob(s) in view: can't tell"
+        return False, f"{len(knobs)} knob(s) in view instead of 3: the box moved"
+    if not in_row:
+        return False, f"a knob is {off:.0f} mm out of line: a drawer is open"
+    moved = 0.0 if ref is None else float(np.linalg.norm(np.mean(knobs, axis=0) - np.mean(ref, axis=0)))
+    return True, "all shut" + (f" (the box slid {moved:.0f} mm since the start: tape it down)" if moved > BOX_MOVED_MM else "")
 
 
 def log_step(logger, n, kind, ok, t0, detail, color=None, drawer=None, note=""):
@@ -145,8 +166,9 @@ class Bench:
         if self.intr is None:
             self.intr = (await self.camera.get_properties()).intrinsic_parameters
         rot, trans = await frame_to_world(self.m, self.camera_name)
-        blocks, table = find_blocks(color, depth, self.intr, rot, trans) if find else ([], None)
-        return Frame(color, depth, self.intr, rot, trans, blocks, table)
+        report: dict = {}
+        blocks, table = find_blocks(color, depth, self.intr, rot, trans, report=report) if find else ([], None)
+        return Frame(color, depth, self.intr, rot, trans, blocks, table, report)
 
     def wrist_for(self, block) -> tuple[float, float]:
         """Wrist theta that closes the fingers across the block's short side, and the same grip turned 180."""
@@ -168,18 +190,62 @@ class Bench:
         path.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(path), vis)
 
+    def save(self, frame: Frame, path: Path | None, assignment: dict[str, int]) -> None:
+        """The annotated picture, plus the raw frame (.npz) so the detector can be re-run on it offline."""
+        if path is None:
+            return
+        self.draw(frame, path, assignment)
+        np.savez_compressed(path.with_suffix(".npz"), color=frame.color, depth=frame.depth, rot=frame.rot,
+                            trans=frame.trans, intr=[frame.intr.focal_x_px, frame.intr.focal_y_px,
+                                                     frame.intr.center_x_px, frame.intr.center_y_px])
+
     async def scan(self, assignment: dict[str, int], save_to: Path | None = None) -> Frame:
-        """Go to the overview pose and look."""
+        """Go to the overview pose and look. A block of a sorted color cut off by the edge of the view gets
+        one more look, from the overview pose moved toward it; the blocks found there are added."""
         await ppc.open_gripper_for_pick(self.gripper)
         await ppc.return_to_view_pose(self.m, self.arm, self.motion, self.gripper_name, self.world,
                                       self.margin, self.timeout)
         await ppc.with_timeout(self.arm.do_command({"set_speed": self.cfg["VIAM_APPROACH_SPEED_DEGS_PER_SEC"]}),
                                10.0, "set approach speed")
         frame = await self.look()
-        print(f"  saw: {describe(frame.blocks, assignment)}")
-        if save_to is not None:
-            self.draw(frame, save_to, assignment)
+        self.save(frame, save_to, assignment)
+        cut = [e for e in frame.report.get("edge_cut", []) if e["color"] in assignment]
+        if cut:
+            more = await self.look_toward(frame, cut[0]["xy"])
+            if more is None:
+                print(f"  a {cut[0]['color']} block is cut off by the edge of the view and the arm can't look "
+                      "there: move it toward the middle")
+            else:
+                self.save(more, save_to.with_name(f"{save_to.stem}-b.jpg") if save_to else None, assignment)
+                new = [b for b in more.blocks if all(math.hypot(b.center[0] - o.center[0], b.center[1] - o.center[1])
+                                                     > 40.0 for o in frame.blocks)]
+                frame.blocks += new
+                print(f"  looked again toward the {cut[0]['color']} block at the edge of the view: {len(new)} more")
+        knobs = frame.report.get("knobs", [])
+        in_row, off = knob_row(knobs)
+        row = "" if in_row is None else ", in a row" if in_row else f", one {off:.0f} mm out of line (a drawer is open)"
+        print(f"  saw: {describe(frame.blocks, assignment)}; drawer box: {len(knobs)} knob(s){row}")
         return frame
+
+    async def look_toward(self, frame: Frame, xy) -> Frame | None:
+        """Look again with the camera moved toward `xy` (same height and wrist), or None if the arm can't."""
+        view = ppc.load_view_pose()
+        ray = frame.rot @ np.array([0.0, 0.0, 1.0])  # the camera's center ray, in world
+        a, b, c = frame.table
+        t = (a * xy[0] + b * xy[1] + c - frame.trans[2]) / ray[2]
+        dx, dy = EDGE_LOOK_SHIFT * (np.asarray(xy, float) - (frame.trans[:2] + t * ray[:2]))
+        pose = Pose(x=view.x + dx, y=view.y + dy, z=view.z, o_x=view.o_x, o_y=view.o_y, o_z=view.o_z, theta=view.theta)
+        bounds = ppc.workspace_bounds()
+        bounds["VIAM_WORKSPACE_Z_MAX_MM"] = ppc.setting("VIAM_VIEW_Z_MAX_MM", 800.0)
+        try:
+            ppc.assert_in_workspace(pose.x, pose.y, pose.z, bounds)
+            await ppc.move_gripper(self.motion, self.gripper_name, pose, self.world, linear=False,
+                                   timeout=self.timeout, label="look toward the edge of the view",
+                                   table_margin_mm=self.margin)
+        except Exception as e:
+            print(f"  (can't move the camera toward ({xy[0]:.0f}, {xy[1]:.0f}): {str(e)[:120]})")
+            return None
+        return await self.look()
 
     # ---- drawers ----------------------------------------------------------------------------------
 
@@ -233,10 +299,16 @@ class Bench:
         # At the drawer: block's long side along the pull, wrist as close as possible to the drawer's own wrist
         # (so closing doesn't need a big wrist turn).
         near = info.get("wrist")
-        guard, result, used = ContactGuard(self.read_loads), "not tried", None
+        # Contact is only judged where the fingertips can reach something: this block's top, or a neighbor's
+        # the open fingers could straddle. Higher up, a load blip is the arm itself (run 20261016-204103
+        # "touched" at z=172 above a 60 mm block and closed on air).
+        tops = [o.center[2] + o.height_mm / 2.0 for o in frame.blocks
+                if o is block or math.hypot(o.center[0] - block.center[0], o.center[1] - block.center[1]) < 120.0]
+        reach = max(tops) + ppc.gripper_geom().tcp_to_fingertip_mm + 40.0
+        guard, result, used = ContactGuard(self.read_loads, active_below=reach), "not tried", None
         for pick_t in (theta, alt):
             place_t = place_theta_for_drawer(tuple(info["open_dir"]), near if near is not None else pick_t, self.ov)
-            guard = ContactGuard(self.read_loads)
+            guard = ContactGuard(self.read_loads, active_below=reach)
             try:
                 result = await ppc.move_one_object(obj, target, others, others, self.arm, self.gripper, self.motion,
                                                    self.gripper_name, self.world, self.cfg, self.margin, self.timeout,
@@ -261,6 +333,7 @@ class Bench:
                       "height_mm": round(block.height_mm, 1), "short_axis_deg": round(block.short_axis_deg, 1),
                       "center": [round(float(v), 1) for v in block.center]},
             "drop_target": dp, "contact_z": guard.contact_z, "contact_worst": round(guard.worst, 2),
+            "contact_judged_below_z": round(reach, 1),
         }
 
     async def check_in_drawer(self, color: str, info: dict) -> tuple[bool, float]:
@@ -277,15 +350,32 @@ class Bench:
     async def episode(self, assignment: dict[str, int], logger) -> tuple[str, str, int, dict]:
         n, looks, attempts, where, closes_ok = 0, 0, {}, {}, True
         status, reason = "done", ""
+        ref, unchecked = None, None  # first all-shut knob row seen; a closed drawer the camera hasn't checked
         while True:
             looks += 1
             frame = await self.scan(assignment, Path(logger.dir) / f"look-{looks}.jpg")
+            knobs, open_now = frame.report.get("knobs", []), await self.open_drawers()
+            if not open_now:  # nothing should be open: check that from the knobs
+                shut, note = box_state(knobs, ref)
+                if shut and ref is None:
+                    ref = knobs
+                if unchecked is not None:
+                    n, t0 = n + 1, time.time()
+                    print(f"  drawer {unchecked} after closing: {note}")
+                    log_step(logger, n, "close-check", shut is not False, t0, {"knobs": knobs, "note": note},
+                             drawer=unchecked, note=note)
+                    unchecked = None
+                if shut is False:  # a push that slid the box, or a drawer opened by hand: don't work blind
+                    closes_ok, status = False, "aborted"
+                    reason = f"drawers: {note}. Close it by hand (tape the box down if it slid), then run again"
+                    break
             todo = [b for b in frame.blocks if b.color in assignment
                     and where.get(b.color) != f"drawer:{assignment[b.color]}"
                     and attempts.get(b.color, 0) <= self.args.retries]
             if not todo:
                 break
-            block = min(todo, key=lambda b: (assignment[b.color], b.long_mm))
+            # a block whose drawer is already open first (a retry), then drawer order
+            block = min(todo, key=lambda b: (str(assignment[b.color]) not in open_now, assignment[b.color], b.long_mm))
             color, k = block.color, assignment[block.color]
             attempts[color] = attempts.get(color, 0) + 1
             print(f"\n{color} -> drawer {k}  (try {attempts[color]})")
@@ -313,6 +403,9 @@ class Bench:
                 where[color] = f"drawer:{k}" if seen else "unknown"
                 print(f"  check drawer {k}: {color} {'seen' if seen else 'NOT seen'} ({frac:.0%} of the window)")
                 log_step(logger, n, "check", seen, t0, {"fraction": round(frac, 3)}, color=color, drawer=k)
+            elif attempts[color] <= self.args.retries:
+                print(f"  drawer {k} stays open for the next try")
+                continue
 
             n, t0 = n + 1, time.time()
             r = await self.close(k)
@@ -325,14 +418,24 @@ class Bench:
             if not ok:
                 status, reason = "aborted", f"close {k}: {r.get('error') or r.get('stage')}"
                 break
+            unchecked = k
 
-        if status == "done":  # anything of a sorted color still on the table didn't make it
+        if status == "done":
+            for other in list(await self.open_drawers()):  # left open for a retry that didn't come
+                n, t0 = n + 1, time.time()
+                r = await self.close(int(other))
+                closes_ok &= bool(r.get("success"))
+                print(f"  close {other}: {'ok' if r.get('success') else r.get('error') or r.get('stage')}")
+                log_step(logger, n, "close", bool(r.get("success")), t0, r, drawer=int(other),
+                         note=str(r.get("error", "")))
             looks += 1
             final = await self.scan(assignment, Path(logger.dir) / f"look-{looks}-final.jpg")
-            for b in final.blocks:
+            for b in final.blocks:  # anything of a sorted color still on the table didn't make it
                 if b.color in assignment:
                     where[b.color] = "table"
-            reason = ", ".join(f"{c}: {where.get(c, 'not seen')}" for c in assignment)
+            shut, note = box_state(final.report.get("knobs", []), ref)
+            closes_ok &= shut is not False
+            reason = ", ".join(f"{c}: {where.get(c, 'not seen')}" for c in assignment) + f"; drawers: {note}"
         truth = {"blocks": {c: where.get(c, "unknown") for c in assignment},
                  "all_closed": closes_ok and not await self.open_drawers(), "source": "cameras"}
         return status, reason, n, truth
