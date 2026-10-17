@@ -23,6 +23,7 @@ import json
 import time
 
 from worldarm import connection
+from worldarm.act.celebrate import hurray
 from worldarm.act.drawer import ClientDrawers, ServiceDrawers
 from worldarm.cell.config import CellConfig
 from worldarm.cell.rig import Rig
@@ -57,6 +58,8 @@ async def main() -> None:
     t0 = time.time()
     try:
         result = await run_task(rig, drawers, logger, max_steps=args.max_steps, dry_run=args.dry_run)
+        if result.get("success") and not args.dry_run:
+            await hurray(rig)  # sorted: celebrate
     except BaseException as e:
         await rig.stop()
         result = {"status": "aborted", "success": False, "reason": f"{type(e).__name__}: {e}"}

@@ -3,8 +3,10 @@ import os
 from dotenv import load_dotenv
 from viam.robot.client import RobotClient
 
-# Each arm has its own env file; pick one with WORLDARM_ENV=.env.arm2 (default: .env)
-load_dotenv(os.getenv("WORLDARM_ENV", ".env"))
+# Each arm has its own env file; pick one with WORLDARM_ENV=.env.arm2 (default: .env). A file picked that way
+# wins over variables already in the shell: VS Code's terminal pre-loads .env (python.terminal.useEnvFile),
+# which otherwise kept pointing at the other arm.
+load_dotenv(os.getenv("WORLDARM_ENV", ".env"), override="WORLDARM_ENV" in os.environ)
 
 
 def env(name: str) -> str:

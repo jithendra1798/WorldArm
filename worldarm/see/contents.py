@@ -6,11 +6,12 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from worldarm.blocks import DARK_V, PAINT_S, Block, Surface, _short_side, name_color
+from worldarm.blocks import DARK_V, MAX_SIDE_MM, MIN_SIDE_MM, PAINT_S, Block, Surface, _short_side, name_color
 from worldarm.cell.geometry import point_in_polygon
 
 MIN_ABOVE_FLOOR_MM = 12.0   # taller than this above the drawer floor: something standing in it
 MIN_PIXELS = 120
+SLIVER_TALLER_MM = 65.0     # seen on armfarm03: 3-8 mm wide, 69-83 mm "tall" at the drawer's back; blocks <= ~62
 
 
 def drawer_contents(surf: Surface, inside: np.ndarray, floor_z: float, shrink_mm: float = 3.0) -> list[Block]:
@@ -47,6 +48,9 @@ def drawer_contents(surf: Surface, inside: np.ndarray, floor_z: float, shrink_mm
         top = idx[hh >= 0.5 * h_mm]
         pts = surf.world[top if top.size >= 20 else idx]
         short_mm, long_mm, short_deg, center_xy = _short_side(pts[:, :2])
+        if (short_mm < MIN_SIDE_MM and h_mm > SLIVER_TALLER_MM) or long_mm > MAX_SIDE_MM:
+            continue  # a thin, tall sliver of the drawer's back in shadow (seen as "yellow"), not a block;
+                      # a thin, low one is a real block mostly hidden under the box's edge
         base = float(floor_z)
         out.append(Block(color=name, pixel=(int(centroids[i][0]), int(centroids[i][1])), mask=comp.astype(np.uint8) * 255,
                          center=np.array([center_xy[0], center_xy[1], base + h_mm / 2.0]), height_mm=h_mm,

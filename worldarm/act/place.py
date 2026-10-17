@@ -1,9 +1,8 @@
 """Set a held block down: into an open drawer, or onto the table.
 
-The drop is planned from geometry measured in the last look: the drawer's inside, its floor height and
-the top of its walls. The block is carried with its bottom clear of the walls, lowered until its bottom
-is just above the floor, and let go with the fingers opened only a little - turned so that the open
-fingers fit between the drawer walls.
+The drop is planned from geometry measured in the last look: the drawer's inside and the top of its
+walls. The block is carried with its bottom clear of the walls to the centre of the drawer, and let go
+with the fingertips just above the walls, the fingers opened only a little: it drops the rest.
 """
 
 from __future__ import annotations
@@ -61,9 +60,9 @@ class PlaceResult:
 def drawer_target(org: Organizer, k: int, held: PickResult, contents: list[Block], cfg) -> tuple[DropTarget | None, str]:
     """Where and how to drop a held block into open drawer k, or (None, why not).
 
-    The block goes where it has the most room among what's already in the drawer. It is lowered to the
-    floor when the open fingers fit inside the drawer there without touching another block; otherwise it
-    is let go with the fingertips just above the walls (its bottom already inside them) and drops the rest.
+    Every block is dropped the same way: over the centre of the drawer's open part, let go with the
+    fingertips just above the walls (and anything already inside), turned so its long side lies along
+    the drawer's long side. It is never lowered in among the walls.
     """
     d = org.drawer(k)
     if d.inside is None or d.floor_z is None:
@@ -71,44 +70,22 @@ def drawer_target(org: Organizer, k: int, held: PickResult, contents: list[Block
     pull, row = org.pull, org.row
     t_in, s_in = d.inside @ row, d.inside @ pull
     t0, t1, s0, s1 = float(t_in.min()), float(t_in.max()), float(s_in.min()), float(s_in.max())
-    plan, g = held.plan, cfg.gripper
+    plan, g, oc = held.plan, cfg.gripper, cfg.organizer
     across = held.width_mm or plan.expected_width_mm      # block size between the fingers
     jaw = plan.jaw_extent_mm                              # block size along the jaws
-    span = across + RELEASE_EXTRA_MM + 2 * g.finger_depth_mm
-    rim = d.rim_z if d.rim_z is not None else d.floor_z + cfg.organizer.rim_above_table_mm
-    others = [(b.center[:2] @ row, b.center[:2] @ pull, 0.5 * max(b.short_mm, b.long_mm), b.table_z_mm + b.height_mm)
-              for b in contents]
-    best = None
-    for axis_name, axis in (("pull", pull), ("row", row)):           # the fingers close along `axis`
-        e_s, e_t = (across, jaw) if axis_name == "pull" else (jaw, across)   # block extent along pull / row
-        f_s, f_t = (span, g.finger_width_mm) if axis_name == "pull" else (g.finger_width_mm, span)
-        if e_t > (t1 - t0) - 2 or e_s > (s1 - s0) - 2:
-            continue
-        for tc in np.linspace(t0 + e_t / 2 + 1, t1 - e_t / 2 - 1, 3):
-            for sc in np.linspace(s0 + e_s / 2 + 1, s1 - e_s / 2 - 1, 9):
-                gap = min([np.hypot(tc - ot, sc - os_) - r - 0.5 * max(e_t, e_s) for ot, os_, r, _ in others] or [1e9])
-                if gap < 2.0:
-                    continue  # it would land on another block
-                fingers_in = (t0 + 1 <= tc - f_t / 2 and tc + f_t / 2 <= t1 - 1
-                              and s0 + 1 <= sc - f_s / 2 and sc + f_s / 2 <= s1 - 1)
-                fingers_clear = all(abs(tc - ot) > f_t / 2 + r + 3 or abs(sc - os_) > f_s / 2 + r + 3
-                                    for ot, os_, r, _ in others)
-                lowered = fingers_in and fingers_clear
-                key = (lowered, min(gap, 60.0), -abs(tc - (t0 + t1) / 2))
-                if best is None or key > best[0]:
-                    best = (key, tc, sc, deg_of(axis), lowered)
-    if best is None:
+    # the walls' top; a measurement far below the real walls (seen once: 26 mm) would carry it into the box
+    rim = max(d.rim_z if d.rim_z is not None else -1e9, d.floor_z + oc.rim_above_table_mm - oc.floor_above_table_mm)
+    if jaw <= (s1 - s0) - 2 and across <= (t1 - t0) - 2:
+        axis = row                                        # fingers across the drawer: long side along it
+    elif jaw <= (t1 - t0) - 2 and across <= (s1 - s0) - 2:
+        axis = pull
+    else:
         return None, f"no room in drawer {k} for a {across:.0f} x {jaw:.0f} mm block"
-    _, tc, sc, axis_deg, lowered = best
-    p = tc * row + sc * pull
-    tops = max([rim] + [o[3] for o in others])
-    bottom = held.bottom_below_frame_mm
-    if lowered:
-        release = d.floor_z + cfg.grasp.release_gap_mm + bottom
-    else:  # fingertips just above the walls and the other blocks; the block's bottom is already inside
-        release = tops + 8.0 + g.tip_below_frame_mm
-    return DropTarget(float(p[0]), float(p[1]), d.floor_z, tops, axis_deg % 180.0, f"drawer {k}",
-                      release_z=float(release), lowered=lowered), ""
+    p = 0.5 * (t0 + t1) * row + 0.5 * (s0 + s1) * pull
+    tops = max([rim] + [b.table_z_mm + b.height_mm for b in contents])
+    release = tops + 8.0 + g.tip_below_frame_mm           # fingertips just above the walls: it drops the rest
+    return DropTarget(float(p[0]), float(p[1]), d.floor_z, tops, deg_of(axis) % 180.0, f"drawer {k}",
+                      release_z=float(release), lowered=False), ""
 
 
 def table_target(xy, table_z: float, neighbors: list[Block] = (), clear_mm: float = 150.0) -> DropTarget:

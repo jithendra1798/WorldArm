@@ -16,6 +16,7 @@ import numpy as np
 from viam.proto.common import Pose
 
 from worldarm.act.grasp_plan import plan_grasp
+from worldarm.act.look import refine_block
 from worldarm.act.pick import pick
 from worldarm.act.place import place, table_target
 from worldarm.act.watch import ContactWatch
@@ -318,9 +319,12 @@ async def pick_test(rig, color: str | None = None, times: int = 1, hold_s: float
             trials.append({"status": "not seen", "color": color})
             break
         b = cands[0]
-        plan = plan_grasp(b, cfg, scene.table_blocks)
+        first = plan_grasp(b, cfg, scene.table_blocks)
+        b, neighbors, look = await refine_block(rig, b, scene.table_blocks, (first.theta, first.alt_theta),
+                                                extra=travel_obstacles(scene))
+        plan = plan_grasp(b, cfg, neighbors)
         held = await pick(rig, plan, travel_obstacles=travel_obstacles(scene))
-        rec = {"color": b.color, "block": block_json(b), "pick": held.to_json(), "status": held.status}
+        rec = {"color": b.color, "block": block_json(b), "look": look, "pick": held.to_json(), "status": held.status}
         if held.ok:
             await rig.settle(hold_s)
             w = await rig.width_mm()
