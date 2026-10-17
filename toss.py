@@ -476,7 +476,7 @@ async def grip(gripper, cfg: TossCfg, teach: bool = False, repeat: int = 0, out:
                     "sd_s": statistics.stdev(lat) if len(lat) > 1 else 0.0, "command_returned_s": acks})
         say(f"open -> fingers clear of the ball: median {res['median_s'] * 1000:.0f} ms, sd {res['sd_s'] * 1000:.0f} ms "
             f"(over {len(lat)}); the command itself returned after {statistics.median(acks) * 1000:.0f} ms")
-        cfg.jaw_s = round(res["median_s"], 3)
+        cfg.jaw_s = cfg.release_delay_s = round(res["median_s"], 3)   # both throws lead the release by it
         say(f"the throw now sends the open command {cfg.jaw_s * 1000:.0f} ms early; saved: {cfg.save()}")
         await set_mm(gripper, cfg, cfg.ball_diameter_mm + 15.0)
     write_json(run_dir("grip", out) / "grip.json", res)
