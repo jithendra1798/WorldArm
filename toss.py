@@ -646,11 +646,14 @@ async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: s
         off = M[:3, :3] @ (CAM_IN_FLANGE - np.array([0.0, 0.0, cfg.gripper_frame_mm]))   # camera minus gripper frame
         above = np.array([est["x"] - off[0], est["y"] - off[1], cfg.pick_look_z_mm])
         if reachable(above[0], above[1]):
-            await line_to(arm, chain, cfg, above, reaching, "look above the ball")
-            near = [b for b in await wrist_look(machine, camera, cfg, chain, await joints_of(arm), out / "look.jpg")
-                    if math.hypot(b["x"] - est["x"], b["y"] - est["y"]) < 80]
-            if near:
-                est = min(near, key=lambda b: math.hypot(b["x"] - est["x"], b["y"] - est["y"]))
+            try:                                           # a closer look: a refinement, skipped if it can't be safe
+                await line_to(arm, chain, cfg, above, reaching, "look above the ball")
+                near = [b for b in await wrist_look(machine, camera, cfg, chain, await joints_of(arm), out / "look.jpg")
+                        if math.hypot(b["x"] - est["x"], b["y"] - est["y"]) < 80]
+                if near:
+                    est = min(near, key=lambda b: math.hypot(b["x"] - est["x"], b["y"] - est["y"]))
+            except SystemExit as e:
+                say(f"no close look ({e}); using the first fix")
         say(f"ball at ({est['x']:.0f}, {est['y']:.0f}), {est['height']:.0f} mm tall")
         cz = cfg.pick_table_z_mm + est["height"] / 2.0
         gz = max(cz - cfg.grasp_lower_mm + cfg.grasp_raise_mm + cfg.tcp_to_tip_mm,
