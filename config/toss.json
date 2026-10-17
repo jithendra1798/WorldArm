@@ -9,10 +9,13 @@
   "hold_mm": null,
   "grip_torque_pct": 20,
   "grip_speed": 1500,
+  "release_speed": 5000,
   "release_mm": 84.0,
   "max_open_mm": 84.0,
   "full_open_counts": 850.0,
   "pick_segmenter": "black-ball-segmenter",
+  "pick_detector": "black-ball-detector",
+  "pick_min_confidence": 0.2,
   "pick_look_mm": [
     380.0,
     0.0,
@@ -25,7 +28,7 @@
     -57.0,
     0.0,
     -79.0,
-    0.0
+    90.0
   ],
   "joints": [
     0,

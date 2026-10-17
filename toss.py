@@ -506,34 +506,53 @@ async def dry(arm, chain: Chain, cfg: TossCfg, repeat: int = 3, scale: float = 1
 
 
 async def find_ball(machine, cfg: TossCfg, camera: str) -> np.ndarray | None:
-    """The ball's centre (mm, armfarm05's frame) from the wrist camera and the ball segmenter: of everything it
-    segments, what sits on the table at the ball's height, nearest the camera's view centre."""
+    """The ball's centre (mm, armfarm05's frame) seen by the wrist camera. First the ball segmenter (3D points);
+    if it finds nothing (black rubber often gives the depth camera nothing), the ball detector's box: the ray from
+    the camera through the box centre, met with the plane the ball's centre lies in (table + radius)."""
+    from viam.components.camera import Camera
     from viam.errors import ResourceNotFoundError
-    from viam.proto.common import PoseInFrame
+    from viam.proto.common import Pose, PoseInFrame
     from viam.services.vision import VisionClient
-    try:
-        seg = VisionClient.from_robot(machine, cfg.pick_segmenter)
-    except ResourceNotFoundError:
-        await machine.refresh()                            # it may have been restarting when we connected
+    from worldarm.cell.geometry import rot_from_ov
+
+    def service(name):
         try:
-            seg = VisionClient.from_robot(machine, cfg.pick_segmenter)
+            return VisionClient.from_robot(machine, name)
         except ResourceNotFoundError:
-            raise SystemExit(f"armfarm05 has no vision service {cfg.pick_segmenter!r} right now (Viam app -> armfarm05 -> "
-                             "check it's configured and running)")
-    objs = await seg.get_object_point_clouds(camera)
-    found = []
-    for o in objs:
-        gs = o.geometries.geometries
-        if gs:
-            w = await machine.transform_pose(PoseInFrame(reference_frame=o.geometries.reference_frame, pose=gs[0].center),
-                                             "world")
-            found.append(np.array([w.pose.x, w.pose.y, w.pose.z]))
+            return None
+
+    if service(cfg.pick_segmenter) is None or service(cfg.pick_detector) is None:
+        await machine.refresh()                            # one may have been restarting when we connected
     z_ball = cfg.table_z_mm + cfg.ball_diameter_mm / 2.0
-    on_table = [b for b in found if abs(b[2] - z_ball) < 60.0]
-    if not on_table:
-        return None
     look = np.asarray(cfg.pick_look_mm[:2], float)
-    return min(on_table, key=lambda b: float(np.linalg.norm(b[:2] - look)))
+    seg = service(cfg.pick_segmenter)
+    if seg is not None:
+        found = []
+        for o in await seg.get_object_point_clouds(camera):
+            gs = o.geometries.geometries
+            if gs:
+                w = await machine.transform_pose(PoseInFrame(reference_frame=o.geometries.reference_frame,
+                                                             pose=gs[0].center), "world")
+                found.append(np.array([w.pose.x, w.pose.y, w.pose.z]))
+        on_table = [b for b in found if abs(b[2] - z_ball) < 60.0]
+        if on_table:
+            return min(on_table, key=lambda b: float(np.linalg.norm(b[:2] - look)))
+    det = service(cfg.pick_detector)
+    if det is None:
+        raise SystemExit(f"armfarm05 has neither {cfg.pick_segmenter!r} nor {cfg.pick_detector!r} running right now")
+    dets = [d for d in await det.get_detections_from_camera(camera) if d.confidence >= cfg.pick_min_confidence]
+    if not dets:
+        return None
+    d = max(dets, key=lambda d: d.confidence)
+    ip = (await Camera.from_robot(machine, camera).get_properties()).intrinsic_parameters
+    c = (await machine.transform_pose(PoseInFrame(reference_frame=camera, pose=Pose(o_z=1.0)), "world")).pose
+    R = rot_from_ov(c.o_x, c.o_y, c.o_z, c.theta)          # camera axes in the world: x right, y down, z out
+    u, v = 0.5 * (d.x_min + d.x_max), 0.5 * (d.y_min + d.y_max)
+    ray = R @ np.array([(u - ip.center_x_px) / ip.focal_x_px, (v - ip.center_y_px) / ip.focal_y_px, 1.0])
+    if ray[2] > -0.2:
+        return None                                        # not looking down at the table
+    t = (z_ball - c.z) / ray[2]
+    return np.array([c.x, c.y, c.z]) + t * ray
 
 
 async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: str = "cam", say=print) -> bool:

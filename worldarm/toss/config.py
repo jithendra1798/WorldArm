@@ -34,7 +34,9 @@ class TossCfg:
     max_open_mm: float = 84.0               # xArm gripper: 850 counts at 84 mm (chapter 1's GripperCfg)
     full_open_counts: float = 850.0
     # picking the ball up (toss.py pick, throw --pick): armfarm05's wrist camera and its ball segmenter
-    pick_segmenter: str = "black-ball-segmenter"
+    pick_segmenter: str = "black-ball-segmenter"   # 3D, when the depth camera sees the ball
+    pick_detector: str = "black-ball-detector"     # 2D: its box centre, cast onto the ball's plane (black rubber
+    pick_min_confidence: float = 0.2               #   often gives no depth)
     pick_look_mm: tuple = (380.0, 0.0, 325.0)   # the ball point while the camera looks down for it (camera ~45 cm up)
     pick_clearance_mm: float = 5.0          # table clearance for the last few cm down to the ball
     # the swing: start pose and directions from `plan --design` (or edited by hand)
