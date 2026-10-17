@@ -701,6 +701,35 @@ def reachable(x: float, y: float) -> bool:
     return 150 <= math.hypot(x, y) <= 720 and x <= 640 and y >= -400
 
 
+def two_view_fix(p_a, B_a, p_b, B_b, max_err_mm: float = 30.0):
+    """The ball's true (x, y) from two looks straight down at it, the wrist turned ~90 deg between them. A look sees
+    the ball at p + B e: B the flange's x and y axes (their world x, y parts), e the camera's own error in the flange
+    frame (how far off its mount and aim are), the same in both looks (same height, the ball mid-picture). The ball
+    stays put while e turns with the wrist, so the two looks separate them. Returns (p, e), or None if the wrist
+    turned too little to tell them apart or e is implausibly big (the ball moved, or a wrong blob)."""
+    A = np.asarray(B_a, float) - np.asarray(B_b, float)
+    if abs(np.linalg.det(A)) < 1.0:                       # |det| = 4 sin^2(turn / 2): 2 at 90 deg, 1 at 60
+        return None
+    e = np.linalg.solve(A, np.asarray(p_a, float) - np.asarray(p_b, float))
+    if float(np.linalg.norm(e)) > max_err_mm:
+        return None
+    return np.asarray(p_a, float) - np.asarray(B_a, float) @ e, e
+
+
+def camera_over(chain: Chain, cfg: TossCfg, xy, q_seed):
+    """Joints with the wrist camera straight above (x, y), the gripper frame pick_look_z_mm up and pointing down,
+    the wrist turned as in q_seed; None if out of reach."""
+    q = np.asarray(q_seed, float)
+    for _ in range(3):                                     # the camera is off the wrist's axis: re-aim as IK turns it
+        M, _ = chain.frames(q)
+        off = M[:3, :3] @ (CAM_IN_FLANGE - np.array([0.0, 0.0, cfg.gripper_frame_mm]))
+        q_new = solve_down(chain, (xy[0] - off[0], xy[1] - off[1], cfg.pick_look_z_mm), q, (0.0, 0.0, cfg.gripper_frame_mm))
+        if q_new is None:
+            return None
+        q = np.asarray(q_new, float)
+    return q
+
+
 async def line_to(arm, chain: Chain, cfg: TossCfg, gripper_xyz, keep: KeepOut, label: str, step_mm: float = 20.0) -> None:
     """The gripper frame straight to gripper_xyz, pointing down: IK every step_mm, each pose checked, then moved
     through slowly (a straight line near the ball; a joint move would curve)."""
@@ -746,6 +775,44 @@ async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: s
     tool = (0.0, 0.0, cfg.gripper_frame_mm)
     out = run_dir("pick")
     close_pos = hold_counts(cfg)
+
+    async def turned_look(first):
+        """Look again with the wrist turned 90 deg and the camera straight over the ball again: the two looks give
+        its true place, whatever the camera's own error (two_view_fix). None: keep the first look."""
+        q_a = np.asarray(await joints_of(arm), float)
+        B_a = chain.frames(q_a)[0][:2, :2]
+        keep = dataclasses.replace(reaching, margin_mm=60.0)
+        for turn in (90.0, -90.0):
+            seed = q_a.copy()
+            seed[5] += turn
+            q_b = None if abs(seed[5]) > 350.0 else camera_over(chain, cfg, (first["x"], first["y"]), seed)
+            if q_b is None or pose_problem(chain, q_b, tuple(cfg.tool_mm), keep):
+                continue
+            try:
+                await go_slowly(arm, chain, cfg, q_b, say, keep=keep, where="the second look (wrist turned)")
+            except SystemExit:
+                continue
+            q_now = await joints_of(arm)
+            near = [b for b in await wrist_look(machine, camera, cfg, chain, q_now, out / "look-turned.jpg")
+                    if math.hypot(b["x"] - first["x"], b["y"] - first["y"]) < 60.0]
+            if not near:
+                say("  the second look lost the ball: using the first")
+                return None
+            second = min(near, key=lambda b: math.hypot(b["x"] - first["x"], b["y"] - first["y"]))
+            fix = two_view_fix((first["x"], first["y"]), B_a, (second["x"], second["y"]),
+                               chain.frames(np.asarray(q_now, float))[0][:2, :2])
+            if fix is None:
+                say(f"  the two looks disagree by {math.hypot(second['x'] - first['x'], second['y'] - first['y']):.0f} mm"
+                    " (too much for the camera's error): using the first")
+                return None
+            xy, e = fix
+            tables = [t for t in (first.get("table_z"), second.get("table_z")) if t is not None]
+            say(f"  two looks 90 deg apart: the ball's true middle ({xy[0]:.1f}, {xy[1]:.1f}) mm; the camera alone was "
+                f"off by ({e[0]:+.1f}, {e[1]:+.1f}) mm")
+            return {**first, "x": float(xy[0]), "y": float(xy[1]), "camera_err_mm": [round(float(v), 1) for v in e],
+                    "table_z": float(np.mean(tables)) if tables else None}
+        say("  no room to turn the wrist for a second look: using the first")
+        return None
 
     async def still_ball(first, i, settle_s: float = 0.6, tries: int = 12):
         """The ball only once it lies still: two looks settle_s apart that agree within 8 mm (a ball still rolling,
@@ -801,16 +868,20 @@ async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: s
         above = np.array([est["x"] - off[0], est["y"] - off[1], cfg.pick_look_z_mm])
         if reachable(above[0], above[1]):
             try:                                           # a closer look: a refinement, skipped if it can't be safe
+                camera_above = True
                 try:
                     await line_to(arm, chain, cfg, above, dataclasses.replace(reaching, margin_mm=60.0),
                                   "look above the ball")
                 except SystemExit:                         # the camera can't get over it: the gripper can
+                    camera_above = False
                     await line_to(arm, chain, cfg, (est["x"], est["y"], cfg.pick_look_z_mm), reaching,
                                   "look above the ball (the gripper over it)")
                 near = [b for b in await wrist_look(machine, camera, cfg, chain, await joints_of(arm), out / "look.jpg")
                         if math.hypot(b["x"] - est["x"], b["y"] - est["y"]) < 80]
                 if near:
                     est = min(near, key=lambda b: math.hypot(b["x"] - est["x"], b["y"] - est["y"]))
+                    if camera_above:                       # and from 90 deg around: its true middle
+                        est = await turned_look(est) or est
             except SystemExit as e:
                 say(f"no close look ({e}); using the first fix")
         say(f"2. the ball is at ({est['x']:.0f}, {est['y']:.0f}) mm; the table there is at "

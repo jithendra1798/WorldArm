@@ -166,3 +166,21 @@ def test_taught_throw_plan_keeps_every_limit_and_releases_near_peak_speed():
     tool = np.array([taught.point(chain, q, 175.0) for q in p["q"]])
     assert np.linalg.norm(np.diff(tool, axis=0), axis=1).max() / 0.01 <= 1000.0 * 1.03     # the xArm's tool cap
     assert 0 < p["release_t"] < p["duration"] and p["ball_speed"] > 0.5
+
+
+def test_two_looks_ninety_degrees_apart_find_the_true_middle_and_the_cameras_error():
+    """The camera's own error turns with the wrist, the ball doesn't: two looks 90 deg apart separate them."""
+    import toss
+    rng = np.random.default_rng(3)
+    flip = np.diag([1.0, -1.0])                                   # pointing down: the flange's axes are mirrored
+    for _ in range(20):
+        p, e, a = rng.uniform(200, 500, 2), rng.uniform(-12, 12, 2), rng.uniform(-np.pi, np.pi)
+        turn = rng.choice([np.pi / 2, -np.pi / 2]) + rng.uniform(-0.1, 0.1)   # IK turns it about 90 deg
+        R = lambda t: np.array([[np.cos(t), -np.sin(t)], [np.sin(t), np.cos(t)]])
+        B_a, B_b = R(a) @ flip, R(a) @ flip @ R(turn)
+        got = toss.two_view_fix(p + B_a @ e, B_a, p + B_b @ e, B_b)
+        assert got is not None
+        assert np.allclose(got[0], p, atol=1e-6) and np.allclose(got[1], e, atol=1e-6)
+    B = np.diag([1.0, -1.0])
+    assert toss.two_view_fix((0, 0), B, (1, 1), B @ np.array([[0.99, -0.14], [0.14, 0.99]])) is None   # turned 8 deg
+    assert toss.two_view_fix((0, 0), B, (80, 0), B @ np.array([[0.0, -1.0], [1.0, 0.0]])) is None     # 57 mm "error"

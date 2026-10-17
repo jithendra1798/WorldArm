@@ -254,3 +254,31 @@ def test_throw_with_pick_finds_the_ball_picks_it_and_throws(cfg, monkeypatch):
 def load_real_chain():
     from worldarm.toss.kinematics import load_chain
     return load_chain("config/kinematics_armfarm05.urdf")
+
+
+def test_pick_looks_twice_ninety_degrees_apart_and_grips_the_true_middle_despite_the_cameras_error(cfg, monkeypatch):
+    """A wrist camera mounted 8.6 mm off: one look puts the ball 8.6 mm off; the second look, wrist turned 90 deg,
+    finds the true middle, and the fingers close there."""
+    chain = load_real_chain()
+    real = TossCfg(kinematics="config/kinematics_armfarm05.urdf", hold_mm=58.0, pick_ball_height_mm=60.0,
+                   walls=[[[711.0, -1500.0, -500.0], [811.0, 1500.0, 1100.0]], [[-1500.0, -1395.0, -500.0], [1500.0, -1295.0, 1100.0]]],
+                   ceiling_z_mm=1000.0)
+    world = World(FakeArm(q=[0.0, 0.0, -60.0, 0.0, -60.0, 0.0]))
+    true_xy, cam_err = np.array([400.0, 300.0]), np.array([7.0, -5.0])
+
+    async def off_camera(machine, camera, c, chain_, q, save=None):     # sees the ball shifted by its own error
+        if save is not None and save.name == "after-lift.jpg":
+            return []
+        x, y = true_xy + chain.frames(np.asarray(q, float))[0][:2, :2] @ cam_err
+        return [{"x": float(x), "y": float(y), "height": 55.0, "u": 640, "v": 360, "area": 9000, "darkness": 30.0,
+                 "table_z": -7.0}]
+    monkeypatch.setattr(toss, "wrist_look", off_camera)
+    lines = []
+    assert run(toss.pick_ball(world.arm, world.gripper, None, chain, real, "cam", say=lines.append))
+    assert any("two looks 90 deg apart" in l for l in lines)
+    tool = np.array([0.0, 0.0, real.gripper_frame_mm, 1.0])
+    at = [(chain.frames(np.asarray(q, float))[0] @ tool)[:3] for kind, q in world.arm.calls if kind == "move"]
+    grasp = min(at, key=lambda g: g[2])                                  # the lowest the gripper went: the grip
+    assert np.allclose(grasp[:2], true_xy, atol=1.0)                     # on the true middle, not 8.6 mm off
+    tips = grasp[2] - real.tcp_to_tip_mm
+    assert tips == pytest.approx(-7.0 + 30.0 - real.grip_depth_mm, abs=1.0)   # tips 4 mm under the equator
