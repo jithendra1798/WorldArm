@@ -299,7 +299,8 @@ def hold_counts(cfg: TossCfg) -> float:
 
 def release_counts(cfg: TossCfg) -> float:
     """How far the fingers open to let go: just past the ball (less travel than fully open: the ball is free sooner)."""
-    return cfg.counts(min(cfg.max_open_mm, cfg.pick_ball_height_mm + cfg.free_mm))
+    held = cfg.hold_mm if cfg.hold_mm is not None else cfg.pick_ball_height_mm
+    return cfg.counts(min(cfg.max_open_mm, max(held, cfg.pick_ball_height_mm) + cfg.free_mm))
 
 
 async def open_fast(gripper, cfg: TossCfg) -> None:
@@ -473,7 +474,7 @@ async def grip(gripper, cfg: TossCfg, teach: bool = False, repeat: int = 0, out:
     if repeat:
         lat, acks = [], []
         close_pos = hold_counts(cfg)                         # as the pick closes on the ball
-        free_at = cfg.pick_ball_height_mm + 3.0              # the fingers are clear of the ball here
+        free_at = max(cfg.hold_mm or 0.0, cfg.pick_ball_height_mm) + 3.0   # the fingers are clear of the ball here
         for _ in range(repeat):
             await gripper.do_command({"set": float(close_pos)})  # as the pick closes on the ball
             await asyncio.sleep(SETTLE_S)
@@ -690,7 +691,7 @@ async def line_to(arm, chain: Chain, cfg: TossCfg, gripper_xyz, keep: KeepOut, l
 
 
 async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: str = "cam", say=print,
-                    seen: list | None = None, grab: bool = True) -> bool:
+                    seen: list | None = None, grab: bool = True, wait_s: float = 0.0) -> bool:
     """Find the ball from the scan poses, look again from straight above it, go down and close on it (67% of the
     travel), lift. True if the fingers stopped on the ball."""
     reaching = dataclasses.replace(KeepOut.of(cfg), reach_mm=180.0,     # reaching down near the base folds it more,
@@ -714,6 +715,20 @@ async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: s
             if balls:
                 est = balls[0]
                 break
+        if est is None and wait_s > 0:
+            say(f"no ball near the arm: put it back on the table near armfarm05 (waiting up to {wait_s:.0f} s)")
+            t_end = time.monotonic() + wait_s
+            while est is None and time.monotonic() < t_end:
+                for i, pose in enumerate(cfg.pick_scan[:4]):
+                    q = solve_down(chain, pose, await joints_of(arm), tool)
+                    if q is None:
+                        continue
+                    await go_slowly(arm, chain, cfg, q, say, keep=reaching, where=f"scan pose {i + 1}")
+                    balls = [b for b in await wrist_look(machine, camera, cfg, chain, await joints_of(arm),
+                                                         out / f"wait-scan{i + 1}.jpg") if reachable(b["x"], b["y"])]
+                    if balls:
+                        est = balls[0]
+                        break
         if est is None:
             say(f"no ball seen from any scan pose (pictures in {out})")
             return False
@@ -775,7 +790,7 @@ def ask_landing(ask, planned_mm: np.ndarray, release_xy_mm: np.ndarray, arms: Ar
 
 async def throw(arm, gripper, overhead, table, cfg: TossCfg, chain: Chain, repeat: int = 1, manual: bool = False,
                 target=None, catch_z=None, out: Path | None = None, say=print, ask=input, clock=now,
-                radius_px=(8.0, 30.0), table_px=None, picker=None) -> list[dict]:
+                radius_px=(8.0, 30.0), table_px=None, picker=None, looker=None) -> list[dict]:
     """Wind up, grip the ball barely, swing, let go at the trigger; then where it came down (the overhead
     camera, or measured by hand with --manual). Every throw is logged as it happens."""
     plan, f = throw_plan(cfg, chain, target, catch_z)
@@ -854,6 +869,11 @@ async def throw(arm, gripper, overhead, table, cfg: TossCfg, chain: Chain, repea
                      "planned_thrower_mm": planned, "planned_catcher_mm": arms.to_catcher(planned),
                      "landing_catcher_mm": None if landing is None else np.asarray(landing, float),
                      "landing_how": how}
+            if landing is None and looker is not None:           # where it came down, from the wrist camera
+                seen_at = await looker(planned)
+                if seen_at is not None:
+                    landing, how = arms.to_catcher(seen_at), "wrist camera, after the throw"
+                    entry["landing_catcher_mm"], entry["landing_how"] = landing, how
             log.append(entry)
             write_json(out / "throws.json", log)
             if landing is None:
@@ -871,6 +891,24 @@ async def throw(arm, gripper, overhead, table, cfg: TossCfg, chain: Chain, repea
         await safe_stop(arm)
     summarize(log, say)
     return log
+
+
+async def look_at_landing(arm, machine, chain: Chain, cfg: TossCfg, camera: str, planned_xy, say=print) -> np.ndarray | None:
+    """Lean toward where the ball should have come down (within reach) and find it with the wrist camera."""
+    tool = (0.0, 0.0, cfg.gripper_frame_mm)
+    keep = dataclasses.replace(KeepOut.of(cfg), reach_mm=180.0, table_z_mm=cfg.pick_table_z_mm)
+    p = np.asarray(planned_xy, float)
+    r = float(np.hypot(*p))
+    look = p * (min(r, 680.0) / max(r, 1.0)) * 0.85            # pulled back within reach; the camera sees ahead of it
+    q = solve_down(chain, (look[0], look[1], 520.0), await joints_of(arm), tool)
+    if q is None:
+        return None
+    await go_slowly(arm, chain, cfg, q, say, keep=keep, where="the landing look")
+    balls = await wrist_look(machine, camera, cfg, chain, await joints_of(arm), run_dir("landing") / "landing.jpg")
+    if not balls:
+        return None
+    b = min(balls, key=lambda b: math.hypot(b["x"] - p[0], b["y"] - p[1]))
+    return np.array([b["x"], b["y"]])
 
 
 def summarize(log: list[dict], say=print) -> None:
@@ -1144,14 +1182,23 @@ async def main(argv: list[str] | None = None) -> None:
                                ask=input if args.measure else None, flick=args.flick)
         elif args.cmd == "throw":                               # the default: find it, pick it, our swing
             cam = machines.component(tv, "VIAM_CAMERA", "cam")
-            picker = None if args.hand else (lambda seen=None, grab=True: pick_ball(arm, gripper, thrower, chain, cfg, cam,
-                                                                                  seen=seen, grab=grab))
+            picked = []
+
+            async def picker(seen=None, grab=True):           # after the first throw, wait for the ball to come back
+                ok = await pick_ball(arm, gripper, thrower, chain, cfg, cam, seen=seen, grab=grab,
+                                     wait_s=90.0 if picked else 0.0)
+                picked.append(ok)
+                return ok
+            picker = None if args.hand else picker
+
+            async def looker(planned_xy):
+                return await look_at_landing(arm, thrower, chain, cfg, cam, planned_xy)
             if args.hold_mm is not None:
                 cfg.hold_mm = args.hold_mm
             fit_under_cap(cfg, chain, args.tcp_limit)
             await throw(arm, gripper, overhead, table, cfg, chain, args.repeat, True, target, catch_z,
                         radius_px=tuple(bcfg.ball_radius_px), table_px=table_px, picker=picker,
-                        ask=input if args.measure else (lambda *_: ""))
+                        ask=input if args.measure else (lambda *_: ""), looker=None if args.hand else looker)
         elif args.cmd == "catch":
             catcher_arm = Arm.from_robot(catcher, machines.component(cv, "VIAM_ARM", "arm"))
             if args.teach:

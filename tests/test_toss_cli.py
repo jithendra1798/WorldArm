@@ -241,11 +241,13 @@ def test_throw_with_pick_finds_the_ball_picks_it_and_throws(cfg, monkeypatch):
     monkeypatch.setattr(toss, "wrist_look", ball_on_table)
     picker = lambda seen=None, grab=True: toss.pick_ball(world.arm, world.gripper, None, chain, real, "cam", say=quiet,
                                                          seen=seen, grab=grab)
+    async def looker(planned_xy):                                         # the wrist camera sees where it landed
+        return np.asarray(planned_xy, float) + (12.0, -8.0)
     log = run(toss.throw(world.arm, world.gripper, None, TABLE, real, chain, manual=True, say=quiet, ask=lambda *_: "",
-                         picker=picker))
+                         picker=picker, looker=looker))
     assert log and log[0].get("sent") is not None and world.released                           # picked, then thrown
-    assert len(looked) == 4                       # 2 looks to pick it, 2 more after the throw to find where it landed
-    assert log[0]["landing_catcher_mm"] is not None and "wrist camera" in log[0]["landing_how"]
+    assert log[0]["landing_how"] == "wrist camera, after the throw"            # looked right after the throw
+    assert np.allclose(log[0]["landing_catcher_mm"], np.asarray(log[0]["planned_catcher_mm"]) + (12.0, -8.0))
     assert world.arm.calls[-1][0] == "stop"
 
 
