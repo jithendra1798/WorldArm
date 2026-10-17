@@ -259,7 +259,13 @@ async def go_slowly(arm, chain: Chain, cfg: TossCfg, q_to, say=print, keep: Keep
     q_now = await joints_of(arm)
     if float(np.max(np.abs(np.asarray(q_now) - np.asarray(q_to)))) < 0.2:
         return
-    why = motion_problem(chain, q_now, q_to, tuple(cfg.tool_mm), keep)
+    why = motion_problem(chain, q_now, q_to, tool := tuple(cfg.tool_mm), keep)
+    if why and why.endswith("(0% of the way)"):         # already too near something: moving away from it is fine
+        a, b = np.asarray(q_now, float), np.asarray(q_to, float)
+        mid = a + 0.2 * (b - a)
+        near = dataclasses.replace(keep, margin_mm=min(keep.margin_mm, 40.0), clearance_mm=min(keep.clearance_mm, 40.0))
+        if not motion_problem(chain, a, mid, tool, near) and not motion_problem(chain, mid, b, tool, keep):
+            why = None                                      # the first fifth with smaller margins, the rest with all
     if why:
         M, _ = chain.frames(q_now)
         up = solve_down(chain, (M[0, 3], M[1, 3], 520.0), q_now, (0.0, 0.0, cfg.gripper_frame_mm))
@@ -714,7 +720,8 @@ async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: s
     """Find the ball from the scan poses, look again from straight above it, go down and close on it (67% of the
     travel), lift. True if the fingers stopped on the ball."""
     reaching = dataclasses.replace(KeepOut.of(cfg), reach_mm=180.0,     # reaching down near the base folds it more,
-                                   table_z_mm=cfg.pick_table_z_mm)       # and the real table top is what matters here
+                                   table_z_mm=cfg.pick_table_z_mm,       # the real table top is what matters here,
+                                   margin_mm=70.0)                       # and slow pick moves can go nearer the walls
     near_table = dataclasses.replace(reaching, clearance_mm=cfg.pick_clearance_mm)
     tool = (0.0, 0.0, cfg.gripper_frame_mm)
     out = run_dir("pick")
