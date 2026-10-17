@@ -772,6 +772,60 @@ async def throw(arm, gripper, overhead, table, cfg: TossCfg, chain: Chain, repea
     return log
 
 
+async def throw_taught(arm, gripper, cfg: TossCfg, chain: Chain, connect, picker=None, repeat: int = 1,
+                       tcp_limit: float = 1000.0, release_shift_s: float = -0.2, jaw_s: float = 0.03, out: Path | None = None,
+                       say=print, ask=input) -> list[dict]:
+    """Waj's throw (worldarm/toss/taught.py): pick (optional), the taught start pose, then one smooth streamed
+    spline start -> second -> last under the arm's tool-speed cap, the gripper opened near peak ball speed from its
+    own connection. connect(): a fresh connection to armfarm05 for the release thread."""
+    from worldarm.toss import taught
+    from worldarm.toss.physics import Release, fly
+    keep = dataclasses.replace(KeepOut.of(cfg), reach_mm=300.0, table_z_mm=cfg.pick_table_z_mm, clearance_mm=60.0)
+    out = run_dir("throw-taught", out)
+    log: list[dict] = []
+    try:
+        for i in range(repeat):
+            if picker is not None:
+                if not await picker():
+                    say("no ball in the gripper: stopping")
+                    break
+            await go_slowly(arm, chain, cfg, taught.POSES["start"], say, keep=keep)
+            plan = taught.plan(chain, await joints_of(arm), tcp_limit=tcp_limit, release_shift_s=release_shift_s)
+            bad = next(((t, why) for t, q in zip(plan["times"][::3], plan["q"][::3])
+                        if (why := pose_problem(chain, q, tuple(cfg.tool_mm), keep))), None)
+            if bad:
+                raise SystemExit(f"Refused: the throw's path isn't clear at {bad[0]:.2f} s: {bad[1]}")
+            land = fly(Release(plan["ball_pos"] / 1000.0, plan["ball_vel"]), (cfg.pick_table_z_mm + 22.0) / 1000.0)
+            planned = None if land is None else land.xy * 1000.0
+            say(f"throw {i + 1}: {plan['duration']:.2f} s swing, ball leaves at {plan['ball_speed']:.2f} m/s from "
+                f"({plan['ball_pos'][0]:.0f}, {plan['ball_pos'][1]:.0f}, {plan['ball_pos'][2]:.0f}) mm"
+                + (f"; should land near ({planned[0]:.0f}, {planned[1]:.0f}) mm" if planned is not None else ""))
+            if ask(f"throw {i + 1}/{repeat}: everyone clear of the throw? Enter: throw (s: stop) ").strip().lower() == "s":
+                break
+            try:
+                await gripper.do_command({"set_gripper_speed": int(cfg.release_speed)})
+            except Exception:
+                pass
+            releaser = taught.Releaser(connect, "gripper", plan["release_t"] - jaw_s)
+            releaser.start()
+            if not await asyncio.to_thread(releaser.ready.wait, 20.0) or "error" in releaser.result:
+                releaser.cancel()
+                raise SystemExit(f"Release thread could not connect ({releaser.result.get('error', 'timeout')}); no throw")
+            res = await taught.stream(arm, plan, releaser)
+            rel = res["release"]
+            say("RELEASE NOT SENT: the gripper is still closed" if rel is None else
+                f"released at {rel['sent_s']:.3f} s (planned {rel['planned_release_s']:.3f} s), mid-motion: {rel['mid_motion']}")
+            landing = ask_landing(ask, planned, plan["ball_pos"][:2], ArmsFrame.of(cfg.thrower_in_catcher)) \
+                if planned is not None else None
+            log.append({"i": i + 1, "time": time.strftime("%H:%M:%S"), "style": "taught", "tcp_limit": tcp_limit,
+                        "release_shift_s": release_shift_s, "plan": {k: v for k, v in plan.items() if k not in ("times", "q")},
+                        "stream": res, "planned_thrower_mm": planned, "landing_catcher_mm": landing})
+            write_json(out / "throws.json", log)
+    finally:
+        await safe_stop(arm)
+    return log
+
+
 async def hold_bowl_at(arm, xy, cfg: TossCfg, say=print) -> None:
     """armfarm03 brings the bowl over xy (its frame, mm), held as taught: up, over, down, slowly."""
     from viam.proto.common import Pose
@@ -857,6 +911,10 @@ def parser() -> argparse.ArgumentParser:
             s.add_argument("--scale", type=float, default=1.0, help="swing at this share of the planned speed")
         if name == "throw":
             s.add_argument("--repeat", type=int, default=1)
+        if name == "throw":
+            s.add_argument("--taught", action="store_true", help="Waj's throw: the taught poses, one smooth streamed motion")
+            s.add_argument("--tcp-limit", type=float, default=1000.0, help="--taught: tool speed cap (mm/s)")
+            s.add_argument("--release-shift", type=float, default=-0.2, help="--taught: release this long after peak speed (s)")
         if name in ("throw", "catch"):
             s.add_argument("--manual", action="store_true", help="measure the landing by hand, not with the camera")
             s.add_argument("--pick", action="store_true", help="the arm finds the ball on the table and picks it up")
@@ -906,7 +964,7 @@ async def main(argv: list[str] | None = None) -> None:
     teaching = args.cmd == "catch" and args.teach
     if args.cmd in MOVES and not teaching and not args.yes:
         speed = ""
-        if args.cmd in ("dry", "throw", "catch"):
+        if args.cmd in ("dry", "throw", "catch") and not getattr(args, "taught", False):
             plan, _ = throw_plan(cfg, chain, target, catch_z)
             if not plan.ok:
                 raise SystemExit(f"No throw: {plan.reason}")
@@ -938,6 +996,14 @@ async def main(argv: list[str] | None = None) -> None:
             await grip(gripper, cfg, args.teach, args.repeat)
         elif args.cmd == "pick":
             await pick_ball(arm, gripper, thrower, chain, cfg, machines.component(tv, "VIAM_CAMERA", "cam"))
+        elif args.cmd == "throw" and args.taught:
+            cam = machines.component(tv, "VIAM_CAMERA", "cam")
+            picker = (lambda: pick_ball(arm, gripper, thrower, chain, cfg, cam)) if args.pick else None
+
+            async def fresh():
+                m, _ = await machines.connect(cfg.thrower_env, cfg.thrower)
+                return m
+            await throw_taught(arm, gripper, cfg, chain, fresh, picker, args.repeat, args.tcp_limit, args.release_shift)
         elif args.cmd == "throw":
             cam = machines.component(tv, "VIAM_CAMERA", "cam")
             picker = (lambda: pick_ball(arm, gripper, thrower, chain, cfg, cam)) if args.pick else None

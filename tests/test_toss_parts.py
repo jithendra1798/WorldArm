@@ -143,3 +143,16 @@ def test_ball_finder_places_a_dark_ball_from_colour_and_depth():
     assert len(found) == 1
     assert found[0]["x"] == pytest.approx(430.0, abs=4.0) and found[0]["y"] == pytest.approx(270.0, abs=4.0)
     assert found[0]["height"] == pytest.approx(45.0, abs=6.0)
+
+
+def test_taught_throw_plan_keeps_every_limit_and_releases_near_peak_speed():
+    """Waj's throw on armfarm05's model: the spline passes its poses, joints and the tool stay under the caps."""
+    from worldarm.toss import taught
+    from worldarm.toss.kinematics import load_chain
+    chain = load_chain("config/kinematics_armfarm05.urdf")
+    p = taught.plan(chain, taught.POSES["start"], tcp_limit=1000.0, release_shift_s=0.0)
+    assert np.allclose(p["q"][0], taught.POSES["start"]) and np.allclose(p["q"][-1], taught.POSES["last"], atol=1e-6)
+    assert p["peak_joint_speed"] <= 0.9 * taught.MAX_SPEED + 1.0
+    tool = np.array([taught.point(chain, q, 175.0) for q in p["q"]])
+    assert np.linalg.norm(np.diff(tool, axis=0), axis=1).max() / 0.01 <= 1000.0 * 1.03     # the xArm's tool cap
+    assert 0 < p["release_t"] < p["duration"] and p["ball_speed"] > 0.5
