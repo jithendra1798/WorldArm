@@ -33,7 +33,18 @@
     "view_deg_s": 40.0
   },
   "camera": {
-    "correction": null,
+    "correction": {
+      "rotvec": [
+        0.04029,
+        -0.027406,
+        0.008605
+      ],
+      "translation": [
+        -10.154,
+        14.345,
+        0.477
+      ]
+    },
     "min_depth_mm": 250.0
   },
   "organizer": {

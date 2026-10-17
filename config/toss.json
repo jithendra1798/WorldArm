@@ -1,0 +1,78 @@
+{
+  "thrower_env": ".env.arm2",
+  "catcher_env": ".env",
+  "thrower": "armfarm05",
+  "catcher": "armfarm03",
+  "camera": "overview-cam",
+  "kinematics": "config/kinematics_armfarm05.json",
+  "ball_diameter_mm": 50.0,
+  "hold_mm": null,
+  "release_mm": 84.0,
+  "max_open_mm": 84.0,
+  "full_open_counts": 850.0,
+  "start_deg": null,
+  "joints": [
+    1,
+    2,
+    4
+  ],
+  "signs": null,
+  "amplitude_deg": 90.0,
+  "accel_deg_s2": 600.0,
+  "tool_mm": [
+    0.0,
+    0.0,
+    155.0
+  ],
+  "elevation_deg": null,
+  "table_z_mm": 0.0,
+  "clearance_mm": 80.0,
+  "base_radius_mm": 130.0,
+  "ceiling_z_mm": 1000.0,
+  "walls": [
+    [
+      [
+        690.0,
+        -1500.0,
+        -500.0
+      ],
+      [
+        790.0,
+        1500.0,
+        1100.0
+      ]
+    ],
+    [
+      [
+        -1500.0,
+        -550.0,
+        -500.0
+      ],
+      [
+        1500.0,
+        -450.0,
+        1100.0
+      ]
+    ]
+  ],
+  "max_speed_deg_s": 180.0,
+  "max_accel_deg_s2": 1100.0,
+  "windup_speed_deg_s": 20.0,
+  "target_mm": [
+    0.0,
+    500.0
+  ],
+  "catch_z_mm": 25.0,
+  "speed_factor": 1.0,
+  "release_delay_s": 0.05,
+  "trigger": "predict",
+  "start_latency_s": null,
+  "thrower_in_catcher": {
+    "x_mm": 0.0,
+    "y_mm": -1910.0,
+    "yaw_deg": 0.0
+  },
+  "bowl_diameter_mm": 300.0,
+  "bowl_hold": null,
+  "catch_speed_deg_s": 20.0
+}

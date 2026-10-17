@@ -2,7 +2,7 @@
 
 Physics, no learning: the arm's own kinematics and the ball's flight say where a throw lands; three calibrated
 constants (speed factor, release delay, where the arms stand) make it match. First prove the throw repeatable
-at one setting, then calibrate, then catch. Start near (--distance 500) and work out.
+at one setting, then calibrate, then catch. Start near (--distance 500: toward armfarm03) and work out.
 
   python toss.py probe                  no motion: joints, the arm's own kinematics, our model checked against it
   python toss.py plan --design          offline: search a wind-up pose and swing for the target (saved)
@@ -603,7 +603,7 @@ def parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def aim(s):
-        s.add_argument("--distance", type=float, help="target this many mm straight ahead of armfarm05's base")
+        s.add_argument("--distance", type=float, help="target this many mm from armfarm05's base toward armfarm03's")
         s.add_argument("--target", help="target x,y in armfarm05's frame (mm)")
         s.add_argument("--catch-z", type=float, help="height the ball comes down to (mm, armfarm05's frame)")
     sub.add_parser("probe")
@@ -638,7 +638,8 @@ def target_of(cfg: TossCfg, args) -> np.ndarray | None:
     if getattr(args, "target", None):
         return np.array([float(v) for v in args.target.split(",")], float)
     if getattr(args, "distance", None):
-        return np.array([args.distance, 0.0])
+        toward = ArmsFrame.of(cfg.thrower_in_catcher).to_thrower((0.0, 0.0))   # armfarm03's base, armfarm05's frame
+        return args.distance * toward / (np.linalg.norm(toward) or 1.0)
     return None
 
 

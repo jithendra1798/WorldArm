@@ -269,17 +269,26 @@ async def touch(rig, save: bool = False, out: Path | None = None) -> dict:
     lowest = table_z + 35.0                           # 25 mm past where 60 mm fingertips would touch
     await rig.open_mm(40.0)
     await rig.set_speed(cfg.speeds.travel_deg_s)
-    await rig.move(down_pose(spot[0], spot[1], table_z + 130.0, 0.0), label="touch: above a clear spot")
+    theta, errors = None, []
+    for th in (180.0, 0.0):          # the planner's model of the wrist camera hits the wrist at some wrist turns
+        try:
+            await rig.move(down_pose(spot[0], spot[1], table_z + 130.0, th), label="touch: above a clear spot")
+            theta = th
+            break
+        except Exception as e:
+            errors.append(f"wrist {th:.0f}: {str(e)[:160]}")
+    if theta is None:
+        return {"pass": False, "problems": ["can't get above the clear spot: " + "; ".join(errors)]}
     found = []
     for speed, start in ((8.0, table_z + 130.0), (3.0, None)):
         if start is None:
             start = found[-1] + 15.0
-            await rig.move(down_pose(spot[0], spot[1], start, 0.0), linear=True, label="touch: back up", floor_z=lowest)
+            await rig.move(down_pose(spot[0], spot[1], start, theta), linear=True, label="touch: back up", floor_z=lowest)
         await rig.set_speed(speed)
         await rig.settle(0.5)
-        res = await rig.move_watched(down_pose(spot[0], spot[1], lowest, 0.0), ContactWatch(cfg.contact, table_z + 100.0),
+        res = await rig.move_watched(down_pose(spot[0], spot[1], lowest, theta), ContactWatch(cfg.contact, table_z + 100.0),
                                      label="touch: down to the table", floor_z=lowest - 1.0)
-        await rig.move(down_pose(spot[0], spot[1], (res.z or lowest) + 30.0, 0.0), linear=True, label="touch: up",
+        await rig.move(down_pose(spot[0], spot[1], (res.z or lowest) + 30.0, theta), linear=True, label="touch: up",
                        floor_z=lowest)
         if not res.contact:
             return {"pass": False, "problems": [f"no touch felt down to gripper z {lowest:.0f}: contact sensing isn't "

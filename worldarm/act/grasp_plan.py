@@ -83,7 +83,8 @@ def plan_grasp(block: Block, cfg: CellConfig, neighbors: list[Block] | tuple = (
     top = base + height
 
     # grip height: pads centred on the middle, fingertips at least tip_clearance above the base
-    tip_z = max(base + gc.tip_clearance_mm, base + 0.5 * height - g.pad_length_mm / 2.0)
+    tip_z = max(base + gc.tip_clearance_mm, base + 0.5 * height - g.pad_length_mm / 2.0,
+                cfg.workcell.table_z_mm + cfg.workcell.min_tip_above_table_mm)   # never below the arm's own floor
     frame_z_grip = tip_z + g.tip_below_frame_mm
     tallest = max([top] + [n.table_z_mm + n.height_mm for n in near] + ([clear_z] if clear_z is not None else []))
     frame_z_hover = max(frame_z_grip + 60.0, tallest + gc.hover_above_top_mm + g.tip_below_frame_mm)

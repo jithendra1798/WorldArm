@@ -1,0 +1,43 @@
+{
+  "machine": "armfarm03",
+  "camera": "overview-cam",
+  "ball_radius_mm": 25.0,
+  "ball_radius_px": [
+    8.0,
+    30.0
+  ],
+  "camera_latency_s": 0.06,
+  "paddle_half_width_mm": 60.0,
+  "zone_front_mm": 20.0,
+  "zone_back_mm": 150.0,
+  "zone_side_mm": 30.0,
+  "field_length_mm": 1400.0,
+  "field_margin_mm": 150.0,
+  "lane_speed_deg_s": 30.0,
+  "max_lane_speed_deg_s": 90.0,
+  "decel_mm_s2": 0.0,
+  "decel_spread": null,
+  "table_map": null,
+  "table_px": [
+    [
+      1259.800048828125,
+      708.2000122070312
+    ],
+    [
+      19.200000762939453,
+      708.2000122070312
+    ],
+    [
+      19.200000762939453,
+      10.800000190734863
+    ],
+    [
+      1259.800048828125,
+      10.800000190734863
+    ]
+  ],
+  "lane": null,
+  "arm": null,
+  "arm_speed_deg_s": null,
+  "arm_retarget_s": null
+}
