@@ -28,29 +28,53 @@ Team of 4, two arms. Demos are **Saturday at 3:30 PM**; feature freeze at 12:30.
 - **The overhead camera works** (`overview-cam` on armfarm03; details under Stage 2). Only armfarm03's half of the table is in its view so far.
 - **The second arm, armfarm05**, is at the other end of the table.
 
-## Stage 1: integrate and benchmark chapter 1 (tonight, on armfarm03)
+## Stage 1: chapter 1 on armfarm03, piece by piece
 
-This is the guaranteed demo, so it comes before chapter 2.
+This is the guaranteed demo, so it comes before chapter 2. Each piece is its own module with its own real
+test (`drill.py`), so a failing piece is tested and fixed alone; `sort.py` runs them together.
 
-The drawer service is deployed on armfarm03 as `PickBottle`. Waj's pick-and-drop (`move_one_object`) accepts any world-frame drop point.
+**What the robot does** (`sort.py`, rules in `worldarm/task/policy.py`). Every step starts with one look from
+the overview pose: where the blocks are, where the organizer is, each drawer shut, partly open or open,
+and what's inside the open ones (shut drawers' contents are remembered). Then:
+- one drawer open at a time; a partly open drawer is pulled out to 12 cm first;
+- an open drawer with mixed colors keeps the color it has most of; the others are taken out onto the table;
+- an open drawer with one color takes that color's table blocks; none left, it's closed;
+- an empty open drawer takes the color with the most table blocks that has no drawer yet;
+- nothing open: open the mixed drawer, else the drawer holding a color still on the table, else a drawer not
+  yet looked into, else an empty one for a new color;
+- nothing left to organize (every drawer seen and single-colored, table clear): stop.
+Grips are planned from each block's measured size and height (across its short side, pads on its middle,
+fingertips never on the table), every descent stops on contact, and every grip is checked by finger width.
 
-1. **Deploy the drawer split.** ✅ Deployed Friday evening and checked with `status`. `modules/drawer_service.py` now has `open` (pull 12 cm, let go, return a drop point inside the drawer), `close`, and `status` and `forget`, which never move. Paste it into the inline module behind `PickBottle` and deploy. Its logic is tested with fake hardware (`tests/test_drawer_service.py`).
-2. **Set up armfarm03:**
-   - **No tape or mat.** Blocks are found anywhere on the table by their height above the fitted table plane, then named by color (`worldarm/blocks.py`). Black blocks, which return little depth, are found by color.
-   - Colors default to **green → 1, yellow → 2, black → 3** (`WORLDARM_ASSIGNMENT`; blue works too). Red means a knob.
-   - **Tape the drawer box to the table.** In Friday's run, pushing drawer 2 shut slid the whole box about 11 cm instead, and the drawer stayed open.
-   - The overview must show all three knobs and the blocks. Keep blocks at least 16 cm from the knobs: anything nearer counts as part of the box.
-   - Put the arm at the overview pose and save it: `python sort_bench.py --teach-view`.
-3. **Run:** `python sort_bench.py --preview`, then `python sort_bench.py --episodes 10`.
-   - **Per block:** drawer `open` (or reuse it if it's already open) → pick with the wrist turned across the block's short side → contact-checked descent → drop with the long side along the drawer → look into the drawer → `close`.
-   - **Every close is checked by the camera:** the three knobs must be back in a straight row, or the episode stops rather than work around an open drawer. A missed pick is retried with the drawer left open.
-   - **Success is judged by the cameras:** every block seen in its drawer, none left on the table, all drawers closed. `--ask-truth` asks you instead.
-   - `python scoreboard.py` shows per-step and end-to-end rates.
-4. **Freeze:** tag `v1-sorting` in git and record a backup video. Chapter 2 work then happens on a branch, so v1 can't break.
+**Set up (physical):**
+- **Tape the drawer box to the table.** Closing pushes on it; on Friday it slid 11 cm.
+- The overview must show all three knobs and the blocks; keep blocks 16 cm from the knobs.
+- Measure with a ruler and put in `config/armfarm03.json`: finger thickness (`finger_depth_mm`, along the
+  closing direction) and width (`finger_width_mm`), the knob's centre in front of the drawer face
+  (`knob_protrusion_mm`). Defaults are guesses (12, 18, 20 mm).
 
-Waj's code defaulted to armfarm05 in two places: its side wall (y = −500; armfarm03's is at +500) and one shared overview-pose file. Both can now be set per arm, and `sort_bench.py` applies armfarm03's values.
+**Morning run, in this order** (each logs to `runs/`, `python scoreboard.py` shows pass rates):
 
-**Gate (8:45 PM):** per-skill numbers and ≥10 full episodes on the scoreboard, plus the backup video.
+| # | Command | Tests | Pass when |
+|---|---|---|---|
+| 1 | `python drill.py check` | camera, depth, arm, gripper, joint loads (no motion) | PASS, load noise low |
+| 2 | `python drill.py view --teach` (only if `scan` shows a problem) | overview pose: tilt, organizer and blocks in view | saved |
+| 3 | `python drill.py scan --times 3` | perception: blocks, organizer, drawer states, contents | every block and all 3 knobs found; repeatability < 3 mm |
+| 4 | `python drill.py calibrate --save` | camera offset (wrist turned 180°, two heights) | rms after < 4 mm |
+| 5 | `python drill.py touch --save` | fingertip length on bare table | 40-80 mm, saved |
+| 6 | `python drill.py pick --times 5` | grasp planning + pick (puts each block back) | 5/5 held, firm |
+| 7 | `python drill.py drawer 2 --cycle --times 3` (each drawer) | open to 12 cm, close without shoving the box | ok, box moved < 15 mm |
+| 8 | `python drill.py drop 1` | a table block into an open drawer | seen inside |
+| 9 | `python drill.py unload 1` | a block out of a drawer onto the table | on the table |
+| 10 | `python drill.py policy` | the decision from one look (no motion) | sensible |
+| 11 | `python sort.py --dry-run`, then `python sort.py` | the whole task | SORTED |
+
+`python drill.py scan --frame runs/<dir>/<file>.npz` re-runs perception on any saved look with no robot.
+`sort.py --drawers service` uses the deployed drawer service (PickBottle) instead of our drawer skill.
+`sort_bench.py` (the previous pipeline) still works and is left as it was.
+
+**Gate:** steps 1-10 pass, then ≥5 full `sort.py` runs on the scoreboard, plus the backup video. Then tag
+`v1-sorting`; chapter 2 work happens on a branch.
 
 ## Stage 2: one shared world (tonight and Saturday early)
 
@@ -127,12 +151,12 @@ Every number has n and a 95% interval. Every run is logged to `runs/` (seeded la
 
 **Chapter 1** (skills done; integration tonight):
 
-| Package | Owner |
-|---|---|
-| Find and pick up any block | **Waj** |
-| Open and close the drawers (75%, never further) | **Sandeep** |
-| Sort the blocks into the drawers by color (dropping) | **Riyaj** |
-| World model, integration, benchmark & demo | **Jithendra** |
+| Package | Code | Its test | Owner |
+|---|---|---|---|
+| Find and pick up any block | `worldarm/blocks.py`, `act/grasp_plan.py`, `act/pick.py` | `drill.py scan`, `pick` | **Waj** |
+| Open and close the drawers (75%, never further) | `see/organizer.py`, `act/drawer.py` | `drill.py drawer` | **Sandeep** |
+| Sort the blocks into the drawers by color (dropping, taking out) | `see/contents.py`, `act/place.py` | `drill.py drop`, `unload` | **Riyaj** |
+| World model, rules, integration, calibration, demo | `task/`, `cell/`, `drills.py`, `sort.py` | `drill.py policy`, `calibrate`, `touch`; `sort.py` | **Jithendra** |
 
 **Chapter 2** (proposed; confirm at the next sync):
 

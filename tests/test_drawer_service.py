@@ -24,6 +24,17 @@ class FakeLogger:
     error = warning
 
 
+@pytest.fixture(autouse=True)
+def no_waiting(monkeypatch):
+    """The service waits for real hardware to settle; with fakes there's nothing to wait for. Still yield
+    to the event loop, as the service's polling loops rely on it."""
+    real = asyncio.sleep
+
+    async def fast(delay=0, result=None):
+        return await real(0, result)
+    monkeypatch.setattr(ds.asyncio, "sleep", fast)
+
+
 def make_service(tmp_path):
     svc = object.__new__(ds.MyGenericService)
     svc.logger = FakeLogger()

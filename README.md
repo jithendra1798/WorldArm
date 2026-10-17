@@ -56,7 +56,13 @@ Our entry for Viam's *Code That Moves* hackathon (NYC, Oct 16–17 2026).
 | Path | What it is |
 |---|---|
 | `worldarm/`, `run_episode.py`, `try_skill.py`, `scoreboard.py` | World model, planner, episode loop, simulator, logging and scoreboard. `run_episode.py --fake` runs without an arm. |
-| `sort_bench.py` | **Moves the arm.** The chapter 1 benchmark on armfarm03. Blocks are found anywhere on the table (no tape). Per block: drawer `open` → pick across the short side with a contact-checked descent → drop into the drawer → look in → `close`. Success is judged by the cameras; logged for the scoreboard. |
+| `sort.py` | **Moves the arm.** Chapter 1 on armfarm03: sorts the blocks into the drawers, one color per drawer, from whatever state the drawers are in (shut, partly open, open, mixed). `--dry-run` only looks and decides. |
+| `drill.py` | One real test per piece of chapter 1: `check`, `view`, `scan`, `calibrate`, `touch`, `pick`, `drawer`, `drop`, `unload`, `policy` (PLAN.md, Stage 1). |
+| `worldarm/cell/` | One arm's numbers (`config.py` + `config/armfarm03.json`), its hardware with safety checks (`rig.py`), the camera correction (`calibration.py`) |
+| `worldarm/see/` | Perception, no motion: table blocks, the organizer (drawer numbers, how far each is out), what's in open drawers (`scene.py`) |
+| `worldarm/act/` | Skills: grasp planning (`grasp_plan.py`), contact sensing (`watch.py`), `pick.py`, `place.py`, `drawer.py` |
+| `worldarm/task/` | The world model (`belief.py`), the sorting rules (`policy.py`), the loop (`runner.py`) |
+| `sort_bench.py` | **Moves the arm.** The previous chapter 1 benchmark on armfarm03 (kept as it was). Blocks are found anywhere on the table (no tape). Per block: drawer `open` → pick across the short side with a contact-checked descent → drop into the drawer → look in → `close`. Success is judged by the cameras; logged for the scoreboard. |
 | `bench_skill.py` | **Moves the arm.** Benchmarks one skill as deployed: runs its service command N times, a person judges each try, and results go on the scoreboard |
 | `modules/drawer_service.py` | Drawer service: finds the knobs from above, opens and closes a drawer |
 | `pick_place_cubes.py`, `moving-blocks-module/`, `run_moving_blocks_viam.py` | Pick and place between two tape zones, several colors, with recovery |

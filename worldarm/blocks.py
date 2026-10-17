@@ -90,14 +90,41 @@ def _short_side(xy: np.ndarray) -> tuple[float, float, float, np.ndarray]:
     return short_len, long_len, float(np.degrees(np.arctan2(short_vec[1], short_vec[0]))), np.array(rect[0])
 
 
-def find_blocks(color: np.ndarray, depth: np.ndarray, intr, rot: np.ndarray, trans: np.ndarray,
-                report: dict | None = None):
-    """Blocks in one aligned frame. `rot`, `trans` map camera mm to world mm (frames.frame_to_world).
+@dataclass
+class Surface:
+    """One aligned frame measured against the table: world points and height above the table."""
+    color: np.ndarray
+    hsv: np.ndarray
+    depth: np.ndarray
+    intr: object
+    rot: np.ndarray
+    trans: np.ndarray
+    valid: np.ndarray          # (H, W) pixels with usable depth
+    world: np.ndarray          # (N, 3) world points of the valid pixels
+    index: np.ndarray          # (H, W) row of each pixel in `world`, -1 where invalid
+    above: np.ndarray          # (N,) height of each world point above the table plane
+    height: np.ndarray         # (H, W) the same as an image, NaN where invalid
+    coef: np.ndarray           # table plane z = a*x + b*y + c
 
-    Returns (blocks, table_coef) with table_coef = (a, b, c) of the world table plane. If `report` is
-    given it gets "edge_cut": [{"color", "xy"}] for painted things cut off by the image edge (world x, y
-    of the part in view), and "knobs": world [x, y] of each red knob seen.
-    """
+    def table_z(self, x: float, y: float) -> float:
+        return float(self.coef[0] * x + self.coef[1] * y + self.coef[2])
+
+    def to_pixel(self, xyz) -> tuple[float, float]:
+        cam = self.rot.T @ (np.asarray(xyz, float) - self.trans)
+        return (float(self.intr.focal_x_px * cam[0] / cam[2] + self.intr.center_x_px),
+                float(self.intr.focal_y_px * cam[1] / cam[2] + self.intr.center_y_px))
+
+    def mask_xy(self, inside) -> np.ndarray:
+        """(H, W) mask of valid pixels whose world x, y satisfy `inside(xy (N, 2)) -> bool (N,)`."""
+        m = np.zeros(self.valid.shape, bool)
+        keep = inside(self.world[:, :2])
+        v, u = np.nonzero(self.valid)
+        m[v[keep], u[keep]] = True
+        return m
+
+
+def measure_surface(color: np.ndarray, depth: np.ndarray, intr, rot: np.ndarray, trans: np.ndarray) -> Surface:
+    """Back-project the depth to world, fit the table plane, and measure every pixel's height above it."""
     hgt, wid = depth.shape
     valid = (depth > MIN_DEPTH_MM) & (depth < MAX_DEPTH_MM)
     v, u = np.nonzero(valid)
@@ -107,22 +134,39 @@ def find_blocks(color: np.ndarray, depth: np.ndarray, intr, rot: np.ndarray, tra
     world = cam @ rot.T + trans
     coef = fit_table(world[:: max(1, len(world) // 60000)])
     above = world[:, 2] - (coef[0] * world[:, 0] + coef[1] * world[:, 1] + coef[2])
-
     height = np.full((hgt, wid), np.nan, np.float32)
     height[v, u] = above
     index = np.full((hgt, wid), -1, np.int64)
     index[v, u] = np.arange(len(world))
+    return Surface(color, cv2.cvtColor(color, cv2.COLOR_BGR2HSV), depth, intr, rot, trans, valid, world,
+                   index, above, height, coef)
 
+
+def find_blocks(color: np.ndarray, depth: np.ndarray, intr, rot: np.ndarray, trans: np.ndarray,
+                report: dict | None = None):
+    """Blocks in one aligned frame. `rot`, `trans` map camera mm to world mm (frames.frame_to_world).
+
+    Returns (blocks, table_coef) with table_coef = (a, b, c) of the world table plane. If `report` is
+    given it gets "edge_cut": [{"color", "xy"}] for painted things cut off by the image edge (world x, y
+    of the part in view), and "knobs": world [x, y] of each red knob seen.
+    """
+    return blocks_on_surface(measure_surface(color, depth, intr, rot, trans), report)
+
+
+def blocks_on_surface(surf: Surface, report: dict | None = None, clear_mm: float = KNOB_CLEAR_MM):
+    """find_blocks on an already measured surface (see find_blocks)."""
+    hsv, height, index, world, above, valid, coef = (surf.hsv, surf.height, surf.index, surf.world, surf.above,
+                                                     surf.valid, surf.coef)
+    hgt, wid = height.shape
     blockish = ((height > MIN_HEIGHT_MM) & (height < MAX_HEIGHT_MM)).astype(np.uint8)
     blockish = cv2.morphologyEx(blockish, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
     blockish = cv2.morphologyEx(blockish, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
     tall = cv2.dilate((height >= MAX_HEIGHT_MM).astype(np.uint8), np.ones((15, 15), np.uint8))
-    hsv = cv2.cvtColor(color, cv2.COLOR_BGR2HSV)
 
     knobs = _knob_points(hsv, index, world)
 
     def near_knob(xy) -> bool:  # on or in the drawer box: an open drawer's floor, the box's edges
-        return len(knobs) > 0 and float(np.min(np.linalg.norm(knobs - np.asarray(xy)[:2], axis=1))) < KNOB_CLEAR_MM
+        return len(knobs) > 0 and float(np.min(np.linalg.norm(knobs - np.asarray(xy)[:2], axis=1))) < clear_mm
 
     blocks, edge_cut = [], []
     count, labels, stats, centroids = cv2.connectedComponentsWithStats(blockish)
@@ -161,10 +205,38 @@ def find_blocks(color: np.ndarray, depth: np.ndarray, intr, rot: np.ndarray, tra
     for b in blocks:
         found |= (b.mask > 0).astype(np.uint8)
     near_found = cv2.dilate(found, np.ones((31, 31), np.uint8))  # a dark patch beside a block is that block
-    blocks += [b for b in _dark_blocks(hsv, height, near_found, tall, intr, rot, trans, coef) if not near_knob(b.center)]
+    blocks += [b for b in _dark_blocks(hsv, height, near_found, tall, surf.intr, surf.rot, surf.trans, coef)
+               if not near_knob(b.center)]
     if report is not None:
         report.update(edge_cut=edge_cut, knobs=[[round(float(x), 1), round(float(y), 1)] for x, y in knobs])
     return blocks, coef
+
+
+def knob_centers(surf: Surface, diameter_mm: float = 23.0, with_edge: bool = False):
+    """World centres (N, 3) of the red knob balls. The camera sees the near half of each ball; its pixels'
+    centroid sits 2/3 of a radius in front of the centre (pixels sample the projected disc evenly), so step
+    that far further along the view ray. with_edge=True also returns which balls touch the image edge
+    (cut off: their centre is unreliable)."""
+    h, s, v = surf.hsv[:, :, 0], surf.hsv[:, :, 1], surf.hsv[:, :, 2]
+    red = (((h <= 6) | (h >= 170)) & (s >= 120) & (v >= 60)).astype(np.uint8)
+    red = cv2.morphologyEx(red, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(red)
+    out, edge = [], []
+    hgt, wid = surf.valid.shape
+    for i in range(1, count):
+        if stats[i, cv2.CC_STAT_AREA] < 200:
+            continue
+        idx = surf.index[(labels == i) & (surf.index >= 0)]
+        if idx.size < 20:
+            continue
+        cap = surf.world[idx]
+        mid = cap.mean(axis=0)
+        ray = mid - surf.trans
+        ray = ray / (np.linalg.norm(ray) or 1.0)
+        out.append(mid + ray * diameter_mm / 3.0)
+        edge.append(_touches_border(stats[i], wid, hgt))
+    centers = np.array(out).reshape(-1, 3)
+    return (centers, np.array(edge, bool)) if with_edge else centers
 
 
 def _knob_points(hsv: np.ndarray, index: np.ndarray, world: np.ndarray) -> np.ndarray:

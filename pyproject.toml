@@ -1,3 +1,7 @@
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+# `pytest` runs the fast tests (seconds). `pytest -m sim` runs the whole-task and skill runs on the
+# simulated arm (slower): run those before pushing. `pytest -m ""` runs everything.
+markers = ["sim: runs on the simulated arm with rendered camera frames (slower)"]
+addopts = "-m 'not sim'"
