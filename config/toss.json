@@ -76,7 +76,7 @@
   "pick_hover_mm": 100.0,
   "squeeze_mm": 2.0,
   "free_mm": 20.0,
-  "jaw_s": 0.151,
+  "jaw_s": 0.132,
   "pick_clearance_mm": 5.0,
   "pick_fingers_px": 110,
   "start_deg": [
@@ -145,7 +145,7 @@
   "heading_deg": null,
   "clear_base_mm": 250.0,
   "speed_factor": 0.947,
-  "release_delay_s": 0.151,
+  "release_delay_s": 0.132,
   "trigger": "predict",
   "start_latency_s": -0.0073,
   "thrower_in_catcher": {

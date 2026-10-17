@@ -163,10 +163,12 @@ def load_chain(path_or_text: str, fmt: str | None = None) -> Chain:
     return Chain.from_urdf(text) if fmt == "urdf" else Chain.from_sva(text)
 
 
-def solve_down(chain: Chain, xyz_mm, q0, tool_mm=(0.0, 0.0, 0.0), iters: int = 200) -> np.ndarray | None:
-    """Joint angles (deg) that put the tool point at xyz_mm with the gripper pointing straight down, starting from
-    q0 (the wrist roll stays free). Damped least squares on our own model; None if it doesn't get within 1 mm."""
-    target, down = np.asarray(xyz_mm, float), np.array([0.0, 0.0, -1.0])
+def solve_down(chain: Chain, xyz_mm, q0, tool_mm=(0.0, 0.0, 0.0), iters: int = 200, pointing=(0.0, 0.0, -1.0)) -> np.ndarray | None:
+    """Joint angles (deg) that put the tool point at xyz_mm with the gripper pointing straight down (or along
+    `pointing`), starting from q0 (the wrist roll stays free). Damped least squares on our own model; None if it
+    doesn't get within 1 mm."""
+    target = np.asarray(xyz_mm, float)
+    down = np.asarray(pointing, float) / np.linalg.norm(pointing)
     lo, hi = np.array([l for l, _ in chain.limits_deg]), np.array([h for _, h in chain.limits_deg])
     q = np.clip(np.asarray(q0, float), lo, hi)
 

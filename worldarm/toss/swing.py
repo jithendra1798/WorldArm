@@ -146,7 +146,7 @@ def plan_throw(chain: Chain, spec: SwingSpec, target_xy_mm, catch_z_mm: float, e
     a = spec.accel_deg_s2
     acc_deg = w * w / (2 * a)
     cruise = (acc_deg, spec.amplitude_deg - acc_deg)
-    trigger = rel_p - w * release_delay_s
+    trigger = rel_p - w * speed_factor * release_delay_s   # the arm really turns at w * speed_factor (measured)
     plan = ThrowPlan(True, "", base, w, rel_p, trigger, w / a + (rel_p - acc_deg) / w, p0,
                      u / 1000.0 * w * speed_factor, None, cruise)
     plan.landing = fly(Release(p0 / 1000.0, plan.velocity_m_s), catch_z_mm / 1000.0)

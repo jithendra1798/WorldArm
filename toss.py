@@ -839,7 +839,8 @@ async def throw(arm, gripper, overhead, table, cfg: TossCfg, chain: Chain, repea
                 if not await picker(seen):
                     say("no ball in the gripper: stopping")
                     break
-                landed()
+                if looker is None:
+                    landed()                                 # (the ball wasn't moved since it came down)
                 await go_slowly(arm, chain, cfg, pose_at(spec, 0.0, plan.base_deg), say,   # from the pick: opening up
                                 keep=dataclasses.replace(KeepOut.of(cfg), reach_mm=300.0), where="the wind-up pose")
                 if ask(f"throw {i + 1}/{repeat}: everyone clear of the throw? Enter: throw (s: stop) ").strip().lower() == "s":
@@ -902,7 +903,7 @@ async def throw(arm, gripper, overhead, table, cfg: TossCfg, chain: Chain, repea
                 u = u / (np.linalg.norm(u) or 1.0)
                 say(f"throw {i + 1}: {float(miss @ u):+.0f} mm past the plan, {float(miss @ np.array([-u[1], u[0]])):+.0f} mm "
                     f"left; let go at {sent_p:.1f} deg (meant {plan.trigger_progress_deg:.1f})")
-        if picker is not None and log and "sent" in log[-1]:
+        if picker is not None and looker is None and log and "sent" in log[-1]:
             await picker(seen, grab=False)                   # one last look: where the last throw landed
             landed()
     finally:
@@ -917,8 +918,12 @@ async def look_at_landing(arm, machine, chain: Chain, cfg: TossCfg, camera: str,
     keep = dataclasses.replace(KeepOut.of(cfg), reach_mm=180.0, table_z_mm=cfg.pick_table_z_mm)
     p = np.asarray(planned_xy, float)
     r = float(np.hypot(*p))
-    look = p * (min(r, 680.0) / max(r, 1.0)) * 0.85            # pulled back within reach; the camera sees ahead of it
-    q = solve_down(chain, (look[0], look[1], 520.0), await joints_of(arm), tool)
+    look = p * (min(r, 560.0) / max(r, 1.0))                   # within reach, short of the landing
+    at = np.array([look[0], look[1], 520.0])
+    aim = np.array([p[0], p[1], cfg.pick_table_z_mm]) - at        # the camera points at the landing spot
+    q = solve_down(chain, at, await joints_of(arm), tool, pointing=aim)
+    if q is None:                                               # can't tilt that far: look straight down from there
+        q = solve_down(chain, at, await joints_of(arm), tool)
     if q is None:
         return None
     await go_slowly(arm, chain, cfg, q, say, keep=keep, where="the landing look")
@@ -1141,6 +1146,15 @@ async def main(argv: list[str] | None = None) -> None:
 
     chain = chain_of(cfg) if args.cmd != "probe" else None
     teaching = args.cmd == "catch" and args.teach
+    if args.cmd == "throw" and not (args.taught or args.flick):    # plan first: no connection is waiting on it
+        if args.angle is not None:
+            cfg.elevation_deg = args.angle
+        if args.hold_mm is not None:
+            cfg.hold_mm = args.hold_mm
+        if args.speed is not None:
+            throw_at_speed(cfg, chain, args.speed, args.tcp_limit)
+        else:
+            fit_under_cap(cfg, chain, args.tcp_limit)
     if args.cmd in MOVES and not teaching and not args.yes:
         speed = ""
         if args.cmd in ("dry", "catch") or (args.cmd == "throw" and not (args.taught or args.flick)):
@@ -1215,12 +1229,6 @@ async def main(argv: list[str] | None = None) -> None:
                 return await look_at_landing(arm, thrower, chain, cfg, cam, planned_xy)
             if args.hold_mm is not None:
                 cfg.hold_mm = args.hold_mm
-            if args.angle is not None:
-                cfg.elevation_deg = args.angle
-            if args.speed is not None:
-                throw_at_speed(cfg, chain, args.speed, args.tcp_limit)
-            else:
-                fit_under_cap(cfg, chain, args.tcp_limit)
             await throw(arm, gripper, overhead, table, cfg, chain, args.repeat, True, target, catch_z,
                         radius_px=tuple(bcfg.ball_radius_px), table_px=table_px, picker=picker,
                         ask=input if args.measure else (lambda *_: ""), looker=None if args.hand else looker)
