@@ -696,6 +696,7 @@ async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: s
     try:
         await gripper.do_command({"set": float(cfg.full_open_counts)})
         est = None
+        say("1. looking for the ball")
         for i, pose in enumerate(cfg.pick_scan):
             q = solve_down(chain, pose, await joints_of(arm), tool)
             if q is None:
@@ -723,7 +724,7 @@ async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: s
                     est = min(near, key=lambda b: math.hypot(b["x"] - est["x"], b["y"] - est["y"]))
             except SystemExit as e:
                 say(f"no close look ({e}); using the first fix")
-        say(f"ball at ({est['x']:.0f}, {est['y']:.0f}), {est['height']:.0f} mm tall")
+        say(f"2. the ball is at ({est['x']:.0f}, {est['y']:.0f}) mm, {est['height']:.0f} mm tall")
         if seen is not None:
             seen.append((est["x"], est["y"]))               # where it lay: the last throw's landing
         if not grab:
@@ -732,12 +733,15 @@ async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: s
         gz = max(cz - cfg.grasp_lower_mm + cfg.grasp_raise_mm + cfg.tcp_to_tip_mm,
                  cfg.pick_table_z_mm + cfg.min_tcp_above_table_mm)
         hover = max(cfg.pick_hover_mm, est["height"] + 40.0)
+        say("3. going over it, then straight down around it")
         await line_to(arm, chain, cfg, (est["x"], est["y"], gz + hover), reaching, "above the ball")
         await line_to(arm, chain, cfg, (est["x"], est["y"], gz), near_table, "down to the ball")
+        say("4. closing the fingers on it")
         await gripper.do_command({"set": float(close_pos)})  # Waj's close, lighter: ~38 mm on the 45 mm foam ball
         await asyncio.sleep(0.6)
         pos = (await gripper.do_command({"get": True})).get("pos")
         width = None if pos is None else cfg.mm(float(pos))
+        say("5. lifting it, and checking the table")
         await line_to(arm, chain, cfg, (est["x"], est["y"], max(gz + 150.0, 320.0)), near_table, "lift")
         left = [b for b in await wrist_look(machine, camera, cfg, chain, await joints_of(arm), out / "after-lift.jpg")
                 if math.hypot(b["x"] - est["x"], b["y"] - est["y"]) < 40.0]
@@ -1104,8 +1108,20 @@ async def main(argv: list[str] | None = None) -> None:
             await dry(arm, chain, cfg, args.repeat, args.scale, target)
         elif args.cmd == "grip":
             await grip(gripper, cfg, args.teach, args.repeat)
-        elif args.cmd == "pick":
-            await pick_ball(arm, gripper, thrower, chain, cfg, machines.component(tv, "VIAM_CAMERA", "cam"))
+        elif args.cmd == "pick":                                # find it, pick it, go to the throwing position
+            if await pick_ball(arm, gripper, thrower, chain, cfg, machines.component(tv, "VIAM_CAMERA", "cam")):
+                fit_under_cap(cfg, chain, 1100.0, say=lambda *_: None)
+                plan, _ = throw_plan(cfg, chain)
+                if not plan.ok:
+                    raise SystemExit(f"No throw planned, so no throwing position: {plan.reason}")
+                print("6. moving to the throwing position")
+                try:
+                    await go_slowly(arm, chain, cfg, pose_at(cfg.spec(), 0.0, plan.base_deg),
+                                    keep=dataclasses.replace(KeepOut.of(cfg), reach_mm=300.0), where="the throwing position")
+                finally:
+                    await safe_stop(arm)
+                print("ready: in the throwing position, holding the ball (the next run opens the gripper first: "
+                      "take the ball when it does)")
         elif args.cmd == "throw" and (args.taught or args.flick):   # Waj's taught throw, or his wrist flick
             cam = machines.component(tv, "VIAM_CAMERA", "cam")
             picker = None if args.hand else (lambda: pick_ball(arm, gripper, thrower, chain, cfg, cam))
