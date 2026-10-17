@@ -50,11 +50,12 @@ import pick_place_cubes as ppc  # noqa: E402  (needs the settings above)
 from viam.components.arm import Arm  # noqa: E402
 from viam.components.camera import Camera  # noqa: E402
 from viam.components.gripper import Gripper  # noqa: E402
-from viam.proto.common import Pose  # noqa: E402
+from viam.proto.common import Pose, PoseInFrame  # noqa: E402
 from viam.services.generic import Generic  # noqa: E402
 from viam.services.motion import MotionClient  # noqa: E402
 
 from worldarm.config import parse_assignment  # noqa: E402
+from worldarm.grasp import block_grasp_theta, finger_axis_deg, place_theta_for_drawer  # noqa: E402
 from worldarm.logger import EpisodeLogger  # noqa: E402
 from worldarm.metrics import rate  # noqa: E402
 
@@ -122,6 +123,29 @@ class Bench:
         self.world = ppc.workcell_world_state(include_ceiling=True,
                                               table_keep_out_mm=ppc.setting("VIAM_TABLE_KEEP_OUT_MM", 0.0))
 
+    @property
+    def ov(self) -> tuple[float, float, float]:
+        return (self.cfg["VIAM_GRASP_OX"], self.cfg["VIAM_GRASP_OY"], self.cfg["VIAM_GRASP_OZ"])
+
+    async def grasp_for(self, scene, obj) -> tuple[float, dict]:
+        """Wrist theta that closes the fingers across the block's short side (worldarm/grasp.py)."""
+        async def to_world(u, v, z):
+            p = await ppc.point_to_world(self.m, self.camera_name, scene.intrinsics, u, v, z)
+            return p.x, p.y
+        return await block_grasp_theta(obj.point_mask, scene.depth, to_world,
+                                       self.cfg["VIAM_GRASP_THETA_DEG"], self.ov)
+
+    async def finger_line_px(self, scene, obj, theta: float, half_mm: float = 30.0):
+        """The finger axis for `theta` through the block's center, projected back into the image."""
+        a, c, k = math.radians(finger_axis_deg(theta, self.ov)), obj.center_world, scene.intrinsics
+        ends = []
+        for s in (-half_mm, half_mm):
+            world = Pose(x=c.x + s * math.cos(a), y=c.y + s * math.sin(a), z=c.z, o_z=1)
+            p = (await self.m.transform_pose(PoseInFrame(reference_frame="world", pose=world), self.camera_name)).pose
+            ends.append((int(round(k.focal_x_px * p.x / p.z + k.center_x_px)),
+                         int(round(k.focal_y_px * p.y / p.z + k.center_y_px))))
+        return ends
+
     async def scan(self, assignment: dict[str, int], save_to: Path | None = None):
         """Overview pose -> scene. Returns (scene, source square) or (scene, None) if it's empty."""
         await ppc.open_gripper_for_pick(self.gripper)
@@ -165,12 +189,18 @@ class Bench:
             target = Pose(x=dp["x"], y=dp["y"], z=dp["z"] + self.args.drop_extra_mm, o_z=-1)
             neighbors = [o for o in source.objects if o is not obj]
             obstacles = list({o.pixel: o for o in neighbors}.values())
+            pick_theta, grasp = await self.grasp_for(scene, obj)
+            place_theta = place_theta_for_drawer(tuple(reply["open_dir"]), pick_theta, self.ov)
+            print(f"  grasp {color}: {grasp.get('shape')}, short side {grasp.get('short_mm', '-')} mm along "
+                  f"{grasp.get('short_axis_deg', '-')} deg -> wrist {pick_theta:.0f} deg; at the drawer {place_theta:.0f} deg")
             result = await ppc.move_one_object(obj, target, neighbors, obstacles, self.arm, self.gripper,
                                                self.motion, self.gripper_name, self.world, self.cfg,
-                                               self.margin, self.timeout)
+                                               self.margin, self.timeout,
+                                               pick_theta_deg=pick_theta, place_theta_deg=place_theta)
             print(f"  transfer {color}: {result}")
-            log_step(logger, n, "transfer", result == "ok", t0, {"result": result, "drop_target": dp},
-                     color=color, drawer=k, note=result)
+            log_step(logger, n, "transfer", result == "ok", t0,
+                     {"result": result, "drop_target": dp, "grasp": grasp, "pick_theta": pick_theta,
+                      "place_theta": place_theta}, color=color, drawer=k, note=result)
 
             n, t0 = n + 1, time.time()
             reply = dict(await self.drawers.do_command({"action": "close", "drawer": k}))
@@ -235,11 +265,19 @@ async def main() -> None:
             raise SystemExit("Cancelled.")
 
         if args.preview:
-            _, source = await bench.scan(assignment, Path("captures") / "preview.jpg")
-            print("  picture: captures/preview.jpg")
+            picture = Path("captures") / "preview.jpg"
+            scene, source = await bench.scan(assignment, picture)
+            vis = cv2.imread(str(picture))
             for o in (source.objects if source else []):
                 plan = f"drawer {assignment[o.color_name]}" if o.color_name in assignment else "not sorted"
-                print(f"  {o.color_name:<7} height {o.height_mm:.0f} mm at {ppc.fmt_pose(o.center_world)} -> {plan}")
+                theta, grasp = await bench.grasp_for(scene, o)
+                p0, p1 = await bench.finger_line_px(scene, o, theta)
+                cv2.line(vis, p0, p1, (0, 255, 0), 4)
+                print(f"  {o.color_name:<7} {grasp.get('shape')}, short side {grasp.get('short_mm', '-')} mm "
+                      f"-> wrist {theta:.0f} deg -> {plan}")
+            cv2.imwrite(str(picture), vis)
+            print(f"  picture: {picture}  (green line = where the fingers will close; it should cross the "
+                  "block's short side)")
             return
 
         results = []

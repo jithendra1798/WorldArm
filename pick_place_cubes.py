@@ -908,8 +908,14 @@ async def move_one_object(
     cfg: dict[str, float],
     table_margin: float,
     timeout: float,
+    *,
+    pick_theta_deg: float | None = None,
+    place_theta_deg: float | None = None,
 ) -> str:
     """Pick and place one object.
+
+    pick_theta_deg / place_theta_deg override the configured wrist yaw for this object (set once
+    before each phase, never during a straight move). None keeps the fixed VIAM_GRASP_THETA_DEG.
 
     Returns ``"ok"``, ``"missed_grasp"``, or ``"dropped"``. Recovery is left to
     the caller (re-scan the source square and retry leftovers).
@@ -923,6 +929,9 @@ async def move_one_object(
         "o_z": cfg["VIAM_GRASP_OZ"],
         "theta": cfg["VIAM_GRASP_THETA_DEG"],
     }
+    if pick_theta_deg is not None:
+        orientation["theta"] = pick_theta_deg
+    place_orientation = dict(orientation, theta=place_theta_deg) if place_theta_deg is not None else orientation
     geom = gripper_geom()
     pick_open = pick_open_position_for_scene(obj, remaining_neighbors)
     # Proven pattern (pick_red_cube / Viam workshop): TCP above cube center by
@@ -1052,7 +1061,7 @@ async def move_one_object(
 
     carry_world = travel_world
     hover_pose = await move_to_place_approach(
-        motion, gripper_name, destination, orientation, place_approach_z,
+        motion, gripper_name, destination, place_orientation, place_approach_z,
         carry_world, table_margin, timeout,
     )
     holding = await with_timeout(gripper.is_holding_something(), 5.0, "verify hold after travel")
@@ -1061,7 +1070,7 @@ async def move_one_object(
         logger.warning("Object dropped in transit; will re-scan and recover.")
         return "dropped"
 
-    place_above = make_pose(hover_pose.x, hover_pose.y, place_z, orientation)
+    place_above = make_pose(hover_pose.x, hover_pose.y, place_z, place_orientation)
     await move_gripper(motion, gripper_name, place_above, carry_world, linear=True,
                        timeout=timeout, label="lower into destination zone",
                        table_margin_mm=table_margin)
