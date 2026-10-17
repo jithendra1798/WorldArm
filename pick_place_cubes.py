@@ -911,11 +911,15 @@ async def move_one_object(
     *,
     pick_theta_deg: float | None = None,
     place_theta_deg: float | None = None,
+    descent_guard=None,
 ) -> str:
     """Pick and place one object.
 
     pick_theta_deg / place_theta_deg override the configured wrist yaw for this object (set once
     before each phase, never during a straight move). None keeps the fixed VIAM_GRASP_THETA_DEG.
+    descent_guard(z) -> bool, if given, is awaited after every descent step; True means the fingers
+    touched something (table or block), so the descent stops, backs off 3 mm and grabs there. The
+    last 30 mm then go in 3 mm steps so a touch is caught early.
 
     Returns ``"ok"``, ``"missed_grasp"``, or ``"dropped"``. Recovery is left to
     the caller (re-scan the source square and retry leftovers).
@@ -1023,7 +1027,8 @@ async def move_one_object(
     current_z = grasp_z + hover
     remaining = hover
     while remaining > 1e-3:
-        delta = min(step, remaining)
+        this_step = step if descent_guard is None or remaining > 30.0 else 3.0
+        delta = min(this_step, remaining)
         current_z -= delta
         remaining -= delta
         if current_z < floor:
@@ -1034,6 +1039,13 @@ async def move_one_object(
         await move_gripper(motion, gripper_name, waypoint, grasp_world, linear=True,
                            timeout=timeout, label="descent step",
                            table_margin_mm=table_margin)
+        if descent_guard is not None and await descent_guard(current_z):
+            back_off = make_pose(obj.center_world.x, obj.center_world.y, current_z + 3.0, orientation)
+            await move_gripper(motion, gripper_name, back_off, grasp_world, linear=True,
+                               timeout=timeout, label="back off after contact",
+                               table_margin_mm=table_margin)
+            logger.info("Contact at Z=%.1f during the descent; grabbing 3 mm above it.", current_z)
+            break
 
     from pick_red_cube import gentle_grab
     grip_speed = optional_int("VIAM_GRIPPER_SPEED", 0) or None

@@ -30,7 +30,8 @@ from viam.proto.common import (
 )
 
 # Configured table: center z=-123, height 200 → top surface.
-TABLE_TOP_Z_MM = -23.0
+# Table top in world z: armfarm05's configured value by default; armfarm03's real table is at +2 mm.
+TABLE_TOP_Z_MM = float(os.getenv("VIAM_TABLE_TOP_Z_MM", "-23"))
 # Wall positions default to armfarm05. Other arms override them, e.g. armfarm03 has its
 # side wall at y = +500 (measured with verify_camera.py).
 WALL_FRONT_X_MM = float(os.getenv("VIAM_WALL_FRONT_X_MM", "740"))

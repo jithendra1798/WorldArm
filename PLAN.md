@@ -35,13 +35,13 @@ This is the guaranteed demo, so it comes before chapter 2.
 The drawer service is deployed on armfarm03 as `PickBottle`. Waj's pick-and-drop (`move_one_object`) accepts any world-frame drop point.
 
 1. **Deploy the drawer split.** ✅ Deployed Friday evening and checked with `status`. `modules/drawer_service.py` now has `open` (pull 12 cm, let go, return a drop point inside the drawer), `close`, and `status` and `forget`, which never move. Paste it into the inline module behind `PickBottle` and deploy. Its logic is tested with fake hardware (`tests/test_drawer_service.py`).
-2. **Set up armfarm03 for Waj's scene parser:**
-   - Put **one** blue-tape square in the wrist camera's overview, with the blocks in it. The drawers are the destination, so no second square is needed (`VIAM_TAPE_ZONES=1`; armfarm05 keeps its two).
-   - Colors default to **green → 1, yellow → 2, black → 3** (`WORLDARM_ASSIGNMENT`). His detector names green, yellow, orange, red and black. Blue is the tape, and red is the knobs.
+2. **Set up armfarm03:**
+   - **No tape or mat.** Blocks are found anywhere on the table by their height above the fitted table plane, then named by color (`worldarm/blocks.py`). Black blocks, which return little depth, are found by color.
+   - Colors default to **green → 1, yellow → 2, black → 3** (`WORLDARM_ASSIGNMENT`; blue works too). Red means a knob.
    - Put the arm at the overview pose and save it: `python sort_bench.py --teach-view`.
 3. **Run:** `python sort_bench.py --preview`, then `python sort_bench.py --episodes 10`.
-   - Each block goes drawer `open` → pick and drop → `close`.
-   - Every step's own success report is logged, and you record where each block really ended up.
+   - **Per block:** drawer `open` (or reuse it if it's already open) → pick with the wrist turned across the block's short side → contact-checked descent → drop with the long side along the drawer → look into the drawer → `close`.
+   - **Success is judged by the cameras:** every block seen in its drawer, none left on the table, all drawers closed. `--ask-truth` asks you instead.
    - `python scoreboard.py` shows per-step and end-to-end rates.
 4. **Freeze:** tag `v1-sorting` in git and record a backup video. Chapter 2 work then happens on a branch, so v1 can't break.
 

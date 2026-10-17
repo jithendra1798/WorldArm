@@ -56,7 +56,7 @@ Our entry for Viam's *Code That Moves* hackathon (NYC, Oct 16–17 2026).
 | Path | What it is |
 |---|---|
 | `worldarm/`, `run_episode.py`, `try_skill.py`, `scoreboard.py` | World model, planner, episode loop, simulator, logging and scoreboard. `run_episode.py --fake` runs without an arm. |
-| `sort_bench.py` | **Moves the arm.** The chapter 1 benchmark on armfarm03: for each block, drawer `open` → Waj's pick-and-drop into the drawer → `close`. Asks where each block really ended up, and logs it for the scoreboard. |
+| `sort_bench.py` | **Moves the arm.** The chapter 1 benchmark on armfarm03. Blocks are found anywhere on the table (no tape). Per block: drawer `open` → pick across the short side with a contact-checked descent → drop into the drawer → look in → `close`. Success is judged by the cameras; logged for the scoreboard. |
 | `bench_skill.py` | **Moves the arm.** Benchmarks one skill as deployed: runs its service command N times, a person judges each try, and results go on the scoreboard |
 | `modules/drawer_service.py` | Drawer service: finds the knobs from above, opens and closes a drawer |
 | `pick_place_cubes.py`, `moving-blocks-module/`, `run_moving_blocks_viam.py` | Pick and place between two tape zones, several colors, with recovery |

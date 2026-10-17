@@ -854,6 +854,7 @@ class MyGenericService(Generic, EasyResource):
                 log.setdefault("hover_errors", []).append(str(e)[:120])
         if used is None:
             return {"ok": False, "stage": "hover"}
+        await asyncio.sleep(SETTLE_S)  # a wrist turn on the way here leaves joint 6 ringing: settle first
         await self._speed(SLOW_DEG_S)
         mon = await self._watched_move(gx, gy, GRASP_Z_MM, used)
         log["descent"] = mon
