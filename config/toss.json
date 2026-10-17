@@ -149,7 +149,7 @@
   "speed_factor": 0.947,
   "release_delay_s": 0.132,
   "trigger": "predict",
-  "start_latency_s": -0.0073,
+  "start_latency_s": 0.0583,
   "thrower_in_catcher": {
     "x_mm": 0.0,
     "y_mm": -1905.0,
