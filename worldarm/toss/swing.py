@@ -100,14 +100,18 @@ def find_release(chain: Chain, spec: SwingSpec, elevation: float, base_deg: floa
 
 def plan_throw(chain: Chain, spec: SwingSpec, target_xy_mm, catch_z_mm: float, elevation: float = 45.0,
                max_speed_deg_s: float = 180.0, release_delay_s: float = 0.0, speed_factor: float = 1.0,
-               release_step_deg: float = 1.0) -> ThrowPlan:
+               release_step_deg: float = 1.0, heading_deg: float | None = None, throw_mm: float | None = None) -> ThrowPlan:
     """The base angle and swing speed that land the ball at target_xy (thrower's base frame, mm) at catch_z.
 
     speed_factor and release_delay_s are the two calibrated constants (from a few measured throws): the arm's
     real speed vs. commanded, and how much earlier than the release angle the gripper must be told to open.
     """
-    target = np.asarray(target_xy_mm, float)
-    want_az = math.degrees(math.atan2(target[1], target[0]))
+    by_heading = heading_deg is not None and throw_mm is not None    # the ball's own path: this way, this far
+    if by_heading:
+        h = math.radians(heading_deg)
+        along = np.array([math.cos(h), math.sin(h)]) * throw_mm
+    target = np.asarray(target_xy_mm, float) if not by_heading else along
+    want_az = heading_deg if by_heading else math.degrees(math.atan2(target[1], target[0]))
     rel_p = find_release(chain, spec, elevation, 0.0, release_step_deg)
     if rel_p is None:
         return ThrowPlan(False, f"the ball's direction never reaches {elevation:.0f} deg in this swing")
@@ -121,10 +125,14 @@ def plan_throw(chain: Chain, spec: SwingSpec, target_xy_mm, catch_z_mm: float, e
         p0 = chain.point(pose_at(spec, rel_p, base), spec.tool_mm)
         # where a ball released here would land, as a ray from the release point along u's horizontal part
         az_ball = math.degrees(math.atan2(u[1], u[0]))
+        if by_heading:
+            target = p0[:2] + along
         to_target = target - p0[:2]
         base += math.degrees(math.atan2(to_target[1], to_target[0])) - az_ball
     u = unit_velocity(chain, spec, rel_p, base)
     p0 = chain.point(pose_at(spec, rel_p, base), spec.tool_mm)
+    if by_heading:
+        target = p0[:2] + along
     if float(u[:2] @ (target - p0[:2])) <= 0:
         return ThrowPlan(False, "the target is behind the release point for this swing")
     dist_m = float(np.linalg.norm(target - p0[:2])) / 1000.0
@@ -214,7 +222,8 @@ def forgiveness(chain: Chain, spec: SwingSpec, plan: ThrowPlan, catch_z_mm: floa
 
 def choose_elevation(chain: Chain, spec: SwingSpec, target_xy_mm, catch_z_mm: float, max_speed_deg_s: float,
                      release_delay_s: float = 0.0, speed_factor: float = 1.0,
-                     elevations=range(25, 61)) -> tuple[ThrowPlan | None, Forgiveness | None]:
+                     elevations=range(25, 61), heading_deg: float | None = None,
+                     throw_mm: float | None = None) -> tuple[ThrowPlan | None, Forgiveness | None]:
     """The release elevation (near 45 degrees) where a late release moves the landing least.
 
     Releasing late, the ball leaves further along the swing (lands further) but heading higher; above the
@@ -226,7 +235,7 @@ def choose_elevation(chain: Chain, spec: SwingSpec, target_xy_mm, catch_z_mm: fl
     def at(e):
         if e not in tried:
             plan = plan_throw(chain, spec, target_xy_mm, catch_z_mm, float(e), max_speed_deg_s, release_delay_s,
-                              speed_factor)
+                              speed_factor, heading_deg=heading_deg, throw_mm=throw_mm)
             tried[e] = (plan, forgiveness(chain, spec, plan, catch_z_mm, speed_factor)) if plan.ok else None
         return tried[e]
 
@@ -246,7 +255,8 @@ PITCH_JOINTS = (1, 2, 4)          # xArm shoulder, elbow, wrist pitch (0-based)
 
 def design_swing(chain: Chain, joints, amplitude_deg: float, accel_deg_s2: float, target_xy_mm, catch_z_mm: float,
                  keep, rest_deg, tool_mm=(0.0, 0.0, 155.0), max_speed_deg_s: float = 180.0, step_deg: float = 15.0,
-                 elevation: float = 45.0, say=None, min_throw_mm: float = 0.0) -> list[tuple[float, SwingSpec, ThrowPlan, Forgiveness]]:
+                 elevation: float = 45.0, say=None, min_throw_mm: float = 0.0, heading_deg: float | None = None,
+                 throw_mm: float | None = None, release_delay_s: float = 0.0) -> list[tuple[float, SwingSpec, ThrowPlan, Forgiveness]]:
     """Search wind-up poses for the swinging joints (all turning the same way, every step_deg within their
     limits; the other joints as in rest_deg, the base aimed by the planner) for swings that land the ball on
     target_xy_mm (thrower's base frame) with the release in the cruise and the whole swing clear of the table,
@@ -267,7 +277,8 @@ def design_swing(chain: Chain, joints, amplitude_deg: float, accel_deg_s2: float
                              tuple(tool_mm), keep.table_z_mm, keep.clearance_mm)
             if pose_problem(chain, q0, tool_mm, keep) or pose_problem(chain, end_pose(spec, q0[0]), tool_mm, keep):
                 continue                               # cheap checks first (the base turns both the same way)
-            plan = plan_throw(chain, spec, target_xy_mm, catch_z_mm, elevation, max_speed_deg_s, release_step_deg=1.0)
+            plan = plan_throw(chain, spec, target_xy_mm, catch_z_mm, elevation, max_speed_deg_s, release_delay_s,
+                              release_step_deg=1.0, heading_deg=heading_deg, throw_mm=throw_mm)
             if not plan.ok or flight_mm(plan) < min_throw_mm:
                 continue
             spec.start_deg[0] = plan.base_deg

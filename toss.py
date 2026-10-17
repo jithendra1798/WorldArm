@@ -85,18 +85,23 @@ def throw_plan(cfg: TossCfg, chain: Chain, target=None, catch_z: float | None = 
     spec = cfg.spec()
     if spec is None:
         raise SystemExit("No swing yet: python toss.py plan --design")
+    by_heading = target is None and cfg.throw_mm is not None    # the ball's own path, not a point on the table
     target = np.asarray(cfg.target_mm if target is None else target, float)
     cz = cfg.catch_z_mm if catch_z is None else catch_z
     if cfg.accel_deg_s2 > cfg.max_accel_deg_s2:
         return ThrowPlan(False, f"acceleration {cfg.accel_deg_s2:.0f} deg/s^2 is over the cap {cfg.max_accel_deg_s2:.0f}"), None
     args = (cfg.max_speed_deg_s, cfg.release_delay_s, cfg.speed_factor)
+    way = {"heading_deg": heading_of(cfg), "throw_mm": cfg.throw_mm} if by_heading else {}
     if cfg.elevation_deg is None:
-        plan, f = choose_elevation(chain, spec, target, cz, *args)
+        plan, f = choose_elevation(chain, spec, target, cz, *args, **way)
         if plan is None:                               # nothing works at any elevation: say why at 45
-            plan, f = plan_throw(chain, spec, target, cz, 45.0, *args), None
+            plan, f = plan_throw(chain, spec, target, cz, 45.0, *args, **way), None
     else:
-        plan = plan_throw(chain, spec, target, cz, cfg.elevation_deg, *args)
+        plan = plan_throw(chain, spec, target, cz, cfg.elevation_deg, *args, **way)
         f = forgiveness(chain, spec, plan, cz, cfg.speed_factor) if plan.ok else None
+    if plan.ok and path_near_base(plan) < cfg.clear_base_mm:
+        plan.ok, plan.reason = False, (f"the ball would pass {path_near_base(plan):.0f} mm from armfarm05's own base "
+                                       f"(needs {cfg.clear_base_mm:.0f})")
     if plan.ok and flight_mm(plan) < cfg.min_throw_mm:
         plan.ok, plan.reason = False, (f"the ball would only fly {flight_mm(plan):.0f} mm from the release (a drop, not a "
                                        f"throw; min_throw_mm {cfg.min_throw_mm:.0f}): aim further away")
@@ -106,6 +111,22 @@ def throw_plan(cfg: TossCfg, chain: Chain, target=None, catch_z: float | None = 
         if why:
             plan.ok, plan.reason = False, f"the swing isn't safe: {why}"
     return plan, f
+
+
+def heading_of(cfg: TossCfg) -> float:
+    """The ball's direction at release (deg, thrower's frame): as set, else toward armfarm03's base."""
+    if cfg.heading_deg is not None:
+        return cfg.heading_deg
+    to = ArmsFrame.of(cfg.thrower_in_catcher).to_thrower((0.0, 0.0))
+    return math.degrees(math.atan2(to[1], to[0]))
+
+
+def path_near_base(plan: ThrowPlan) -> float:
+    """How close the ball's path (release to landing, along the table) passes the thrower's base axis (mm)."""
+    a, b = plan.release_mm[:2], plan.landing.xy * 1000.0
+    ab = b - a
+    t = float(np.clip(-(a @ ab) / max(float(ab @ ab), 1e-9), 0.0, 1.0))
+    return float(np.linalg.norm(a + t * ab))
 
 
 def describe(plan: ThrowPlan, f: Forgiveness | None, cfg: TossCfg, say=print) -> None:
@@ -123,7 +144,8 @@ def describe(plan: ThrowPlan, f: Forgiveness | None, cfg: TossCfg, say=print) ->
     say(f"gripper told to open at {plan.trigger_progress_deg:.1f} deg ({cfg.release_delay_s * 1000:.0f} ms before the "
         f"release point), by the {cfg.trigger} trigger")
     say(f"the ball leaves at ({plan.release_mm[0]:.0f}, {plan.release_mm[1]:.0f}, {plan.release_mm[2]:.0f}) mm at "
-        f"{np.linalg.norm(v):.2f} m/s, {el:.1f} deg up; flies {land.t:.2f} s, {land.apex_z * 1000:.0f} mm at the top")
+        f"{np.linalg.norm(v):.2f} m/s, {el:.1f} deg up, heading {math.degrees(math.atan2(v[1], v[0])):.0f} deg "
+        f"(90 = armfarm05's +y); flies {land.t:.2f} s and {flight_mm(plan):.0f} mm, {land.apex_z * 1000:.0f} mm at the top")
     say(f"comes down at ({xy[0]:.0f}, {xy[1]:.0f}) mm in armfarm05's frame = ({arms.to_catcher(xy)[0]:.0f}, "
         f"{arms.to_catcher(xy)[1]:.0f}) mm in armfarm03's")
     if f is not None:
@@ -134,14 +156,17 @@ def describe(plan: ThrowPlan, f: Forgiveness | None, cfg: TossCfg, say=print) ->
 def plan_cmd(cfg: TossCfg, chain: Chain, design: bool = False, target=None, catch_z=None, step_deg: float = 15.0,
              say=print) -> dict:
     """Offline. --design first searches wind-up poses for the swing and saves the best."""
+    given = target
     target = np.asarray(cfg.target_mm if target is None else target, float)
     cz = cfg.catch_z_mm if catch_z is None else catch_z
     if design:
         rest = list(cfg.start_deg) if cfg.start_deg else [0.0] * chain.n
         say("searching wind-up poses (a minute or so)...")
+        way = {"heading_deg": heading_of(cfg), "throw_mm": cfg.throw_mm} if cfg.throw_mm is not None else {}
         found = design_swing(chain, cfg.joints, cfg.amplitude_deg, cfg.accel_deg_s2, target, cz, KeepOut.of(cfg), rest,
                              tuple(cfg.tool_mm), cfg.max_speed_deg_s, step_deg=step_deg, say=say,
-                             min_throw_mm=cfg.min_throw_mm)
+                             min_throw_mm=cfg.min_throw_mm, release_delay_s=cfg.release_delay_s, **way)
+        found = [r for r in found if path_near_base(r[2]) >= cfg.clear_base_mm and r[2].release_mm[0] > -100.0]
         if not found:
             raise SystemExit("No safe swing reaches that target. Try a nearer target, a larger amplitude_deg, a higher "
                              "accel_deg_s2, or other joints.")
@@ -151,7 +176,7 @@ def plan_cmd(cfg: TossCfg, chain: Chain, design: bool = False, target=None, catc
         best = found[0][1]
         cfg.start_deg, cfg.signs = [round(float(q), 2) for q in best.start_deg], list(best.signs)
         say(f"saved the first: {cfg.save()}")
-    plan, f = throw_plan(cfg, chain, target, cz)
+    plan, f = throw_plan(cfg, chain, given, catch_z)
     describe(plan, f, cfg, say)
     return {"plan": plan.to_json(), "forgiveness": f.to_json() if f else None}
 
@@ -415,12 +440,14 @@ async def dry(arm, chain: Chain, cfg: TossCfg, repeat: int = 3, scale: float = 1
     spec = cfg.spec()
     w, a = plan.speed_deg_s * scale, spec.accel_deg_s2
     nominal = Trapezoid(spec.amplitude_deg, w, a)
+    out = run_dir("dry", out)
     swings = []
     try:
         for i in range(repeat):
             await go_slowly(arm, chain, cfg, pose_at(spec, 0.0, plan.base_deg), say)
             t_cmd, rec, _ = await swing(arm, spec, plan.base_deg, w, a, clock, timeout_s=nominal.duration + 5.0)
             t, p = rec.progress(spec)
+            write_json(out / f"swing{i + 1}.json", {"t": (t - t_cmd).tolist(), "progress": p.tolist()})
             prof, sd, rms = fit_trapezoid(t - t_cmd, p, spec.amplitude_deg, w, a)
             rtt = [r[2] for r in rec.readings]
             s = {"start_latency_s": prof.t0, "w_deg_s": prof.w, "accel_deg_s2": prof.a, "fit_rms_deg": rms,
@@ -450,7 +477,7 @@ async def dry(arm, chain: Chain, cfg: TossCfg, repeat: int = 3, scale: float = 1
         say(f"timed trigger would vary {res['trigger_time_sd_s'] * 1000:.0f} ms (sd); joint readings come every "
             f"{rms:.0f} ms for the predicted one")
     say(f"saved the start delay: {cfg.save()}")
-    write_json(run_dir("dry", out) / "dry.json", res)
+    write_json(out / "dry.json", res)
     return res
 
 
@@ -611,7 +638,7 @@ def parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def aim(s):
-        s.add_argument("--distance", type=float, help="target this many mm from armfarm05's base toward armfarm03's")
+        s.add_argument("--distance", type=float, help="the ball flies this many mm from the release, toward armfarm03")
         s.add_argument("--target", help="target x,y in armfarm05's frame (mm)")
         s.add_argument("--catch-z", type=float, help="height the ball comes down to (mm, armfarm05's frame)")
     sub.add_parser("probe")
@@ -646,8 +673,7 @@ def target_of(cfg: TossCfg, args) -> np.ndarray | None:
     if getattr(args, "target", None):
         return np.array([float(v) for v in args.target.split(",")], float)
     if getattr(args, "distance", None):
-        toward = ArmsFrame.of(cfg.thrower_in_catcher).to_thrower((0.0, 0.0))   # armfarm03's base, armfarm05's frame
-        return args.distance * toward / (np.linalg.norm(toward) or 1.0)
+        cfg.throw_mm = float(args.distance)                    # by heading: the ball's path, toward armfarm03
     return None
 
 

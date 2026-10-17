@@ -11,11 +11,11 @@
   "max_open_mm": 84.0,
   "full_open_counts": 850.0,
   "start_deg": [
-    19.735,
-    -67.0,
-    -77.0,
+    4.157,
+    -27.0,
+    -57.0,
     0.0,
-    -99.0,
+    -59.0,
     0.0
   ],
   "joints": [
@@ -28,14 +28,14 @@
     1,
     1
   ],
-  "amplitude_deg": 60.0,
+  "amplitude_deg": 40.0,
   "accel_deg_s2": 1000.0,
   "tool_mm": [
     0.0,
     0.0,
     155.0
   ],
-  "elevation_deg": 40.0,
+  "elevation_deg": 45.0,
   "table_z_mm": 0.0,
   "clearance_mm": 80.0,
   "base_radius_mm": 130.0,
@@ -76,13 +76,16 @@
   ],
   "catch_z_mm": 25.0,
   "min_throw_mm": 400.0,
+  "throw_mm": 600.0,
+  "heading_deg": null,
+  "clear_base_mm": 250.0,
   "speed_factor": 1.0,
   "release_delay_s": 0.05,
   "trigger": "predict",
   "start_latency_s": null,
   "thrower_in_catcher": {
     "x_mm": 0.0,
-    "y_mm": -1910.0,
+    "y_mm": -1905.0,
     "yaw_deg": 0.0
   },
   "bowl_diameter_mm": 300.0,

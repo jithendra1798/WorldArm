@@ -88,12 +88,14 @@ def fit_trapezoid(t, progress, amplitude: float, w_guess: float, a_guess: float)
     first = t[moving][0] if moving.any() else t[0]
     t00 = first - math.sqrt(2.0 * max(p[moving][0] if moving.any() else 0.0, 0.0) / a_guess)
 
-    def resid(x):
-        prof = Trapezoid(amplitude, x[1], math.exp(x[2]), x[0])
+    def resid(x):                                         # acceleration kept within 10-20000 deg/s^2: a slow
+        a = math.exp(min(max(x[2], math.log(10.0)), math.log(2e4)))   # swing barely shows it, and the fit mustn't run off
+        prof = Trapezoid(amplitude, max(x[1], 1e-3), a, x[0])
         return np.array([prof.progress(ti) for ti in t]) - p
 
     fit = least_squares(resid, [t00, w0, math.log(a_guess)])
     t0, w, la = fit.x
+    la = min(max(la, math.log(10.0)), math.log(2e4))
     a = math.exp(la)
     sd = np.array([fit.sd[0], fit.sd[1], a * fit.sd[2]])
     return Trapezoid(amplitude, float(w), float(a), float(t0)), sd, fit.rms

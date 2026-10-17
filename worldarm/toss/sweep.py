@@ -24,6 +24,7 @@ class KeepOut:
     walls: list = field(default_factory=list)   # [[x0, y0, z0], [x1, y1, z1]] boxes
     margin_mm: float = 120.0          # the arm is checked along its centre line: links, gripper and camera stick out
     self_mm: float = 130.0            # the wrist, gripper and ball keep this far from the base column and upper arm
+    reach_mm: float = 450.0           # the wrist stays this far from the shoulder: the arm open, never folded on itself
 
     @classmethod
     def of(cls, cfg) -> KeepOut:
@@ -58,6 +59,8 @@ def self_problem(chain: Chain, q_deg, tool_mm, keep: KeepOut) -> str | None:
     ball = (M @ np.r_[np.asarray(tool_mm, float), 1.0])[:3]
     wrist = np.array([o[-2] + f * (ball - o[-2]) for f in np.linspace(0.0, 1.0, 6)])   # wrist pitch -> ball
     column = (np.array([0.0, 0.0, 0.0]), o[1].copy())                                     # base to shoulder
+    if float(np.linalg.norm(o[-2] - o[1])) < keep.reach_mm:
+        return f"the arm folds on itself (wrist {np.linalg.norm(o[-2] - o[1]):.0f} mm from the shoulder)"
     if float(_seg_dist(wrist, *column).min()) < keep.self_mm:
         return "the wrist or gripper comes too close to the arm's own base"
     if float(_seg_dist(wrist, o[1], o[2]).min()) < keep.self_mm:
