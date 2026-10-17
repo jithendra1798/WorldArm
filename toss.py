@@ -1089,6 +1089,7 @@ def parser() -> argparse.ArgumentParser:
             s.add_argument("--measure", action="store_true", help="type where each throw landed")
             s.add_argument("--tcp-limit", type=float, default=1100.0, help="the arm's tool speed cap (mm/s)")
             s.add_argument("--speed", type=float, help="swing speed (deg/s); the ball flies as far as that throws it")
+            s.add_argument("--angle", type=float, help="release angle above horizontal (deg; default 45)")
             s.add_argument("--release-shift", type=float, default=0.0, help="release this long after peak speed (s)")
             s.add_argument("--flick", action="store_true", help="Waj's wrist snap: the ball faster than the arm's cap")
             s.add_argument("--taught", action="store_true", help="Waj's taught throw instead of our swing")
@@ -1214,6 +1215,8 @@ async def main(argv: list[str] | None = None) -> None:
                 return await look_at_landing(arm, thrower, chain, cfg, cam, planned_xy)
             if args.hold_mm is not None:
                 cfg.hold_mm = args.hold_mm
+            if args.angle is not None:
+                cfg.elevation_deg = args.angle
             if args.speed is not None:
                 throw_at_speed(cfg, chain, args.speed, args.tcp_limit)
             else:
