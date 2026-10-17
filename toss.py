@@ -719,6 +719,22 @@ async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: s
     tool = (0.0, 0.0, cfg.gripper_frame_mm)
     out = run_dir("pick")
     close_pos = hold_counts(cfg)
+
+    async def still_ball(first, i, settle_s: float = 0.6, tries: int = 12):
+        """The ball only once it lies still: two looks settle_s apart that agree within 8 mm (a ball still rolling,
+        or a hand still placing it, is not grabbed at)."""
+        prev = first
+        for k in range(tries):
+            await asyncio.sleep(settle_s)
+            near = [b for b in await wrist_look(machine, camera, cfg, chain, await joints_of(arm),
+                                                out / f"scan{i + 1}-still{k + 1}.jpg") if reachable(b["x"], b["y"])]
+            now_b = min(near, key=lambda b: math.hypot(b["x"] - prev["x"], b["y"] - prev["y"])) if near else None
+            if now_b is not None and math.hypot(now_b["x"] - prev["x"], now_b["y"] - prev["y"]) <= 8.0:
+                return now_b
+            if k == 0:
+                say("  the ball is still moving (or a hand is near it): waiting for it to settle")
+            prev = now_b or prev
+        return None
     try:
         await gripper.do_command({"set": float(cfg.full_open_counts)})
         est = None
@@ -732,8 +748,9 @@ async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: s
                      if reachable(b["x"], b["y"])]
             say(f"scan {i + 1}: {len(balls)} ball(s)")
             if balls:
-                est = balls[0]
-                break
+                est = await still_ball(balls[0], i)
+                if est is not None:
+                    break
         if est is None and wait_s > 0:
             say(f"no ball near the arm: put it back on the table near armfarm05 (waiting up to {wait_s:.0f} s)")
             t_end = time.monotonic() + wait_s
@@ -757,7 +774,12 @@ async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: s
         above = np.array([est["x"] - off[0], est["y"] - off[1], cfg.pick_look_z_mm])
         if reachable(above[0], above[1]):
             try:                                           # a closer look: a refinement, skipped if it can't be safe
-                await line_to(arm, chain, cfg, above, reaching, "look above the ball")
+                try:
+                    await line_to(arm, chain, cfg, above, dataclasses.replace(reaching, margin_mm=60.0),
+                                  "look above the ball")
+                except SystemExit:                         # the camera can't get over it: the gripper can
+                    await line_to(arm, chain, cfg, (est["x"], est["y"], cfg.pick_look_z_mm), reaching,
+                                  "look above the ball (the gripper over it)")
                 near = [b for b in await wrist_look(machine, camera, cfg, chain, await joints_of(arm), out / "look.jpg")
                         if math.hypot(b["x"] - est["x"], b["y"] - est["y"]) < 80]
                 if near:
