@@ -237,10 +237,13 @@ def test_throw_with_pick_finds_the_ball_picks_it_and_throws(cfg, monkeypatch):
         looked.append(camera)
         return [{"x": 400.0, "y": 300.0, "height": 45.0, "u": 640, "v": 360, "area": 3000, "darkness": 30.0}]
     monkeypatch.setattr(toss, "wrist_look", ball_on_table)
-    picker = lambda: toss.pick_ball(world.arm, world.gripper, None, chain, real, "cam", say=quiet)
+    picker = lambda seen=None, grab=True: toss.pick_ball(world.arm, world.gripper, None, chain, real, "cam", say=quiet,
+                                                         seen=seen, grab=grab)
     log = run(toss.throw(world.arm, world.gripper, None, TABLE, real, chain, manual=True, say=quiet, ask=lambda *_: "",
                          picker=picker))
-    assert len(looked) == 2 and log and log[0].get("sent") is not None and world.released     # picked, then thrown
+    assert log and log[0].get("sent") is not None and world.released                           # picked, then thrown
+    assert len(looked) == 4                       # 2 looks to pick it, 2 more after the throw to find where it landed
+    assert log[0]["landing_catcher_mm"] is not None and "wrist camera" in log[0]["landing_how"]
     assert world.arm.calls[-1][0] == "stop"
 
 

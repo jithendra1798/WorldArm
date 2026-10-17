@@ -176,3 +176,44 @@ async def stream(arm, p: dict, releaser: Releaser) -> dict:
         rel["planned_release_s"] = round(p["release_t"], 3)
     return {"stream_s": round(t_end, 3), "planned_s": round(p["duration"], 3), "points": len(p["times"]),
             "release": rel or None}
+
+
+def plan_flick(chain: Chain, q_start, tcp_limit: float = 1000.0, base_s: float = 0.6, dt: float = 0.01,
+               poses=POSES) -> dict:
+    """Waj's wrist flick: the other joints follow the smooth start -> second -> last spline, while the wrist
+    pitch (J5) winds back on the way and then snaps at the full 180 deg/s (bang-bang at the full acceleration) into
+    the last pose. Only the flange is held under tcp_limit (slowing the spline if needed): the ball, out past the
+    wrist, goes faster than the cap. Released at peak wrist speed."""
+    J, sign = 4, -1.0                                      # J5, snapping toward negative angles
+    tf = MAX_SPEED / MAX_ACCEL
+    Q = np.array([q_start, poses["second"], poses["last"]], float)
+    end = poses["last"][J]
+    wind = end - sign * MAX_SPEED * tf
+    seg = np.max(np.abs(np.diff(Q, axis=0)), axis=1)
+    for _ in range(40):
+        knots = np.concatenate([[0.0], np.cumsum(seg)]) / seg.sum() * base_s
+        cs = clamped_spline(knots, Q)
+        T = float(knots[-1])
+        times = np.append(np.arange(0.0, T - dt / 2, dt), T)
+        q = cs(times)
+        t0 = T - 2 * tf
+        pre = clamped_spline([0.0, t0], np.array([[q_start[J]], [wind]]))
+        for k, tk in enumerate(times):
+            if tk <= t0:
+                q[k, J] = float(np.ravel(pre(tk))[0])
+            elif tk - t0 <= tf:
+                q[k, J] = wind + sign * 0.5 * MAX_ACCEL * (tk - t0) ** 2
+            else:
+                q[k, J] = end - sign * 0.5 * MAX_ACCEL * (T - tk) ** 2
+        flange = np.array([point(chain, x, 0.0) for x in q])
+        fpeak = float(np.linalg.norm(np.gradient(flange, times, axis=0), axis=1).max())
+        if fpeak <= tcp_limit:
+            break
+        base_s *= fpeak / tcp_limit * 1.02
+    ball = np.array([point(chain, x, BALL_FROM_FLANGE_MM + 10.0) for x in q])
+    vel = np.gradient(ball, times, axis=0)
+    i = int(np.argmin(np.abs(times - (T - tf))))
+    qd = np.gradient(q, times, axis=0)
+    return {"times": times, "q": q, "release_index": i, "release_t": float(times[i]),
+            "ball_speed": float(np.linalg.norm(vel[i]) / 1000), "ball_vel": vel[i] / 1000.0, "ball_pos": ball[i],
+            "duration": T, "peak_joint_speed": float(np.abs(qd).max()), "flange_peak_mm_s": round(fpeak)}
