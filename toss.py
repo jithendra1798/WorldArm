@@ -506,51 +506,41 @@ async def dry(arm, chain: Chain, cfg: TossCfg, repeat: int = 3, scale: float = 1
 
 
 async def find_ball(machine, cfg: TossCfg, camera: str) -> np.ndarray | None:
-    """The ball's centre (mm, armfarm05's frame) seen by the wrist camera. First the ball segmenter (3D points);
-    if it finds nothing (black rubber often gives the depth camera nothing), the ball detector's box: the ray from
-    the camera through the box centre, met with the plane the ball's centre lies in (table + radius)."""
+    """The ball's centre (mm, armfarm05's frame) seen by the wrist camera, gripper pointing down: task B's dark-ball
+    detector on the colour image (black rubber on the light table; the strip at the bottom where the fingertips
+    show is ignored), the ray from the camera through the ball's centre met with the plane the ball's centre lies in
+    (table + radius). Each look's picture goes to runs/ with what was found."""
+    import cv2
     from viam.components.camera import Camera
-    from viam.errors import ResourceNotFoundError
     from viam.proto.common import Pose, PoseInFrame
-    from viam.services.vision import VisionClient
+    from worldarm.ball.detect import find_balls
     from worldarm.cell.geometry import rot_from_ov
+    from worldarm.perception import decode_color
 
-    def service(name):
-        try:
-            return VisionClient.from_robot(machine, name)
-        except ResourceNotFoundError:
-            return None
-
-    if service(cfg.pick_segmenter) is None or service(cfg.pick_detector) is None:
-        await machine.refresh()                            # one may have been restarting when we connected
-    z_ball = cfg.table_z_mm + cfg.ball_diameter_mm / 2.0
-    look = np.asarray(cfg.pick_look_mm[:2], float)
-    seg = service(cfg.pick_segmenter)
-    if seg is not None:
-        found = []
-        for o in await seg.get_object_point_clouds(camera):
-            gs = o.geometries.geometries
-            if gs:
-                w = await machine.transform_pose(PoseInFrame(reference_frame=o.geometries.reference_frame,
-                                                             pose=gs[0].center), "world")
-                found.append(np.array([w.pose.x, w.pose.y, w.pose.z]))
-        on_table = [b for b in found if abs(b[2] - z_ball) < 60.0]
-        if on_table:
-            return min(on_table, key=lambda b: float(np.linalg.norm(b[:2] - look)))
-    det = service(cfg.pick_detector)
-    if det is None:
-        raise SystemExit(f"armfarm05 has neither {cfg.pick_segmenter!r} nor {cfg.pick_detector!r} running right now")
-    dets = [d for d in await det.get_detections_from_camera(camera) if d.confidence >= cfg.pick_min_confidence]
-    if not dets:
+    cam = Camera.from_robot(machine, camera)
+    images, _ = await cam.get_images(filter_source_names=["color"])
+    img = decode_color(images[0].data) if images else None
+    if img is None:
         return None
-    d = max(dets, key=lambda d: d.confidence)
-    ip = (await Camera.from_robot(machine, camera).get_properties()).intrinsic_parameters
+    h, w = img.shape[:2]
+    search = np.array([[0, 0], [w, 0], [w, h - cfg.pick_fingers_px], [0, h - cfg.pick_fingers_px]])
+    found = find_balls(img, tuple(cfg.pick_radius_px), search)
+    out = run_dir("pick")
+    view = img.copy()
+    cv2.polylines(view, [search.astype(np.int32)], True, (0, 200, 0), 2)
+    for b in found:
+        cv2.circle(view, (int(b.u), int(b.v)), int(b.radius_px), (0, 0, 255), 3)
+    cv2.imwrite(str(out / f"view-{time.strftime('%H%M%S')}.jpg"), view)
+    if not found:
+        return None
+    b = found[0]                                            # the roundest
+    ip = (await cam.get_properties()).intrinsic_parameters
     c = (await machine.transform_pose(PoseInFrame(reference_frame=camera, pose=Pose(o_z=1.0)), "world")).pose
     R = rot_from_ov(c.o_x, c.o_y, c.o_z, c.theta)          # camera axes in the world: x right, y down, z out
-    u, v = 0.5 * (d.x_min + d.x_max), 0.5 * (d.y_min + d.y_max)
-    ray = R @ np.array([(u - ip.center_x_px) / ip.focal_x_px, (v - ip.center_y_px) / ip.focal_y_px, 1.0])
+    ray = R @ np.array([(b.u - ip.center_x_px) / ip.focal_x_px, (b.v - ip.center_y_px) / ip.focal_y_px, 1.0])
     if ray[2] > -0.2:
         return None                                        # not looking down at the table
+    z_ball = cfg.table_z_mm + cfg.ball_diameter_mm / 2.0
     t = (z_ball - c.z) / ray[2]
     return np.array([c.x, c.y, c.z]) + t * ray
 
