@@ -575,8 +575,8 @@ def detect_balls(bgr: np.ndarray, depth: np.ndarray, intr, cam_pos, cam_R, cfg: 
         x0, y0, w, h, area = (int(v) for v in stats[i])
         if not 400 <= area <= 25000 or max(h, w) / max(1, min(h, w)) > 1.8 or area / (h * w) < 0.5:
             continue
-        if x0 <= 1 or y0 <= 1 or x0 + w >= W - 1 or y0 + h >= H - cfg.pick_fingers_px:
-            continue                                       # cut off by the edge, or where the fingertips show
+        if x0 <= 1 or y0 <= 1 or x0 + w >= W - 1 or y0 + h >= H - 1:
+            continue                                       # cut off by the image edge (a fingertip shows that way)
         region = lab[y0:y0 + h, x0:x0 + w] == i
         vals = val[y0:y0 + h, x0:x0 + w][region].astype(np.float32)
         if np.mean(vals < 70) < 0.3:
@@ -600,12 +600,14 @@ def detect_balls(bgr: np.ndarray, depth: np.ndarray, intr, cam_pos, cam_R, cfg: 
         height = top[2] - cfg.pick_table_z_mm
         if not -15 <= height <= 130:
             continue
-        if height < 8:                                     # soft foam reads nearly flat in depth
+        if height < 8:                                     # soft foam reads nearly flat in depth: assume the size
             height = cfg.pick_ball_height_mm
-        cz = cfg.pick_table_z_mm + height / 2.0
+            cz = cfg.pick_table_z_mm + height / 2.0
+        else:                                              # the depth saw its top: the centre is a radius below,
+            cz = top[2] - cfg.pick_ball_height_mm / 2.0    # whatever the table's exact height
         c = cam_pos + ray * ((cz - cam_pos[2]) / ray[2])
-        found.append({"x": float(c[0]), "y": float(c[1]), "height": float(height), "u": round(u), "v": round(v),
-                      "area": area, "darkness": float(np.median(vals))})
+        found.append({"x": float(c[0]), "y": float(c[1]), "cz": float(cz), "height": float(height), "u": round(u),
+                      "v": round(v), "area": area, "darkness": float(np.median(vals))})
     return sorted(found, key=lambda b: b["darkness"])
 
 
@@ -675,7 +677,7 @@ async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: s
                     seen: list | None = None, grab: bool = True) -> bool:
     """Find the ball from the scan poses, look again from straight above it, go down and close on it (67% of the
     travel), lift. True if the fingers stopped on the ball."""
-    reaching = dataclasses.replace(KeepOut.of(cfg), reach_mm=300.0,     # reaching down near the base folds it more,
+    reaching = dataclasses.replace(KeepOut.of(cfg), reach_mm=180.0,     # reaching down near the base folds it more,
                                    table_z_mm=cfg.pick_table_z_mm)       # and the real table top is what matters here
     near_table = dataclasses.replace(reaching, clearance_mm=cfg.pick_clearance_mm)
     tool = (0.0, 0.0, cfg.gripper_frame_mm)
@@ -716,7 +718,7 @@ async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: s
             seen.append((est["x"], est["y"]))               # where it lay: the last throw's landing
         if not grab:
             return True
-        cz = cfg.pick_table_z_mm + est["height"] / 2.0
+        cz = est.get("cz", cfg.pick_table_z_mm + est["height"] / 2.0)
         gz = max(cz - cfg.grasp_lower_mm + cfg.grasp_raise_mm + cfg.tcp_to_tip_mm,
                  cfg.pick_table_z_mm + cfg.min_tcp_above_table_mm)
         hover = max(cfg.pick_hover_mm, est["height"] + 40.0)
@@ -729,7 +731,7 @@ async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: s
             held = bool((await gripper.is_holding_something()).is_holding_something)
         except Exception:
             held = False
-        held = held or (pos is not None and float(pos) > close_pos + 50)   # stopped >5 mm short: the ball is there
+        held = held or (pos is not None and float(pos) > close_pos + 30)   # stopped >3 mm short: the ball is there
         await line_to(arm, chain, cfg, (est["x"], est["y"], max(gz + 150.0, 320.0)), near_table, "lift")
     finally:
         await safe_stop(arm)

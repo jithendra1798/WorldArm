@@ -13,15 +13,42 @@
   "release_mm": 84.0,
   "max_open_mm": 84.0,
   "full_open_counts": 850.0,
-  "pick_segmenter": "black-ball-segmenter",
-  "pick_detector": "black-ball-detector",
-  "pick_min_confidence": 0.2,
-  "pick_look_mm": [
-    380.0,
-    0.0,
-    325.0
+  "pick_scan": [
+    [
+      487.7,
+      495.1,
+      499.7
+    ],
+    [
+      330.0,
+      330.0,
+      500.0
+    ],
+    [
+      480.0,
+      220.0,
+      500.0
+    ],
+    [
+      300.0,
+      560.0,
+      500.0
+    ]
   ],
+  "pick_look_z_mm": 330.0,
+  "pick_table_z_mm": -7.0,
+  "pick_ball_height_mm": 45.0,
+  "gripper_frame_mm": 105.0,
+  "tcp_to_tip_mm": 55.0,
+  "grasp_lower_mm": 6.0,
+  "grasp_raise_mm": 10.0,
+  "min_tcp_above_table_mm": 55.0,
+  "pick_hover_mm": 100.0,
+  "close_pct": 60.0,
+  "free_mm": 20.0,
+  "jaw_s": 0.151,
   "pick_clearance_mm": 5.0,
+  "pick_fingers_px": 110,
   "start_deg": [
     -15.843,
     -47.0,
@@ -92,7 +119,7 @@
   "heading_deg": null,
   "clear_base_mm": 250.0,
   "speed_factor": 0.947,
-  "release_delay_s": 0.05,
+  "release_delay_s": 0.151,
   "trigger": "predict",
   "start_latency_s": -0.0023,
   "thrower_in_catcher": {

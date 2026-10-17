@@ -38,7 +38,7 @@ class TossCfg:
     pick_scan: list = field(default_factory=lambda: [[487.7, 495.1, 499.7], [330.0, 330.0, 500.0], [480.0, 220.0, 500.0],
                                                      [300.0, 560.0, 500.0]])   # gripper frame, looking down
     pick_look_z_mm: float = 330.0           # gripper frame height for the close look from straight above the ball
-    pick_table_z_mm: float = -23.0          # armfarm05's table top (Waj's measured geometry)
+    pick_table_z_mm: float = -7.0           # armfarm05's table top: the ball's top read 37-41 mm in 3 picks (45 mm ball)
     pick_ball_height_mm: float = 45.0       # the foam ball, when depth reads it flat
     gripper_frame_mm: float = 105.0         # gripper frame below the flange
     tcp_to_tip_mm: float = 55.0
@@ -46,7 +46,7 @@ class TossCfg:
     grasp_raise_mm: float = 10.0            # Waj: grip 10 mm higher than WorldArm's height
     min_tcp_above_table_mm: float = 55.0
     pick_hover_mm: float = 100.0
-    close_pct: float = 52.0                 # close the fingers to this share of their travel: ~40 mm on the 45 mm foam ball
+    close_pct: float = 60.0                 # close the fingers to this share of their travel: 34 mm on the 45 mm foam ball
     free_mm: float = 20.0                   # on release, open only this far past the ball (less travel: free sooner)
     jaw_s: float = 0.10                     # open command -> ball free (toss.py grip --repeat measures it)
     pick_clearance_mm: float = 5.0          # table clearance for the last few cm down to the ball
