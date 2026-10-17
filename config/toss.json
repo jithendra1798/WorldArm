@@ -70,8 +70,6 @@
   "pick_ball_height_mm": 45.0,
   "gripper_frame_mm": 105.0,
   "tcp_to_tip_mm": 55.0,
-  "grasp_lower_mm": 6.0,
-  "grasp_raise_mm": 10.0,
   "min_tcp_above_table_mm": 55.0,
   "pick_hover_mm": 100.0,
   "squeeze_mm": 2.0,
@@ -157,5 +155,6 @@
   },
   "bowl_diameter_mm": 300.0,
   "bowl_hold": null,
-  "catch_speed_deg_s": 20.0
+  "catch_speed_deg_s": 20.0,
+  "pad_middle_mm": 45.0
 }

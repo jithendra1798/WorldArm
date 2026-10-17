@@ -791,11 +791,12 @@ async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: s
             seen.append((est["x"], est["y"]))               # where it lay: the last throw's landing
         if not grab:
             return True
-        cz = est.get("cz", cfg.pick_table_z_mm + est["height"] / 2.0)
-        gz = max(cz - cfg.grasp_lower_mm + cfg.grasp_raise_mm + cfg.tcp_to_tip_mm,
-                 cfg.pick_table_z_mm + cfg.min_tcp_above_table_mm)
+        cz = cfg.pick_table_z_mm + cfg.pick_ball_height_mm / 2.0   # it rests on the table: its middle is a radius up
+        gz = max(cz + cfg.pad_middle_mm,                    # the pads' middle on the ball's equator
+                 cfg.pick_table_z_mm + cfg.tcp_to_tip_mm + 5.0)   # the fingertips never closer than 5 mm to the table
         hover = max(cfg.pick_hover_mm, est["height"] + 40.0)
-        say("3. going over it, then straight down around it")
+        say(f"3. going over it, then straight down: the finger pads' middle on its equator ({cz:.0f} mm up), "
+            f"fingertips {gz - cfg.tcp_to_tip_mm - cfg.pick_table_z_mm:.0f} mm above the table")
         await line_to(arm, chain, cfg, (est["x"], est["y"], gz + hover), reaching, "above the ball")
         await line_to(arm, chain, cfg, (est["x"], est["y"], gz), near_table, "down to the ball")
         say(f"4. closing the fingers to {cfg.mm(close_pos):.0f} mm (as the gripper reads it) around it")
