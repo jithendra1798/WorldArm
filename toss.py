@@ -40,8 +40,8 @@ from worldarm.toss.kinematics import Chain, load_chain
 from worldarm.toss.landing import ArmsFrame, resting_ball
 from worldarm.toss.profile import Trapezoid, fit_trapezoid
 from worldarm.toss.sweep import KeepOut, motion_problem
-from worldarm.toss.swing import (Forgiveness, ThrowPlan, choose_elevation, design_swing, end_pose, forgiveness,
-                                 plan_throw, pose_at)
+from worldarm.toss.swing import (Forgiveness, ThrowPlan, choose_elevation, design_swing, end_pose, flight_mm,
+                                 forgiveness, plan_throw, pose_at)
 from worldarm.toss.trigger import Recorder, release
 
 RUNS = Path("runs")
@@ -97,6 +97,9 @@ def throw_plan(cfg: TossCfg, chain: Chain, target=None, catch_z: float | None = 
     else:
         plan = plan_throw(chain, spec, target, cz, cfg.elevation_deg, *args)
         f = forgiveness(chain, spec, plan, cz, cfg.speed_factor) if plan.ok else None
+    if plan.ok and flight_mm(plan) < cfg.min_throw_mm:
+        plan.ok, plan.reason = False, (f"the ball would only fly {flight_mm(plan):.0f} mm from the release (a drop, not a "
+                                       f"throw; min_throw_mm {cfg.min_throw_mm:.0f}): aim further away")
     if plan.ok:
         why = motion_problem(chain, pose_at(spec, 0.0, plan.base_deg), end_pose(spec, plan.base_deg), spec.tool_mm,
                              KeepOut.of(cfg))
@@ -137,7 +140,8 @@ def plan_cmd(cfg: TossCfg, chain: Chain, design: bool = False, target=None, catc
         rest = list(cfg.start_deg) if cfg.start_deg else [0.0] * chain.n
         say("searching wind-up poses (a minute or so)...")
         found = design_swing(chain, cfg.joints, cfg.amplitude_deg, cfg.accel_deg_s2, target, cz, KeepOut.of(cfg), rest,
-                             tuple(cfg.tool_mm), cfg.max_speed_deg_s, step_deg=step_deg, say=say)
+                             tuple(cfg.tool_mm), cfg.max_speed_deg_s, step_deg=step_deg, say=say,
+                             min_throw_mm=cfg.min_throw_mm)
         if not found:
             raise SystemExit("No safe swing reaches that target. Try a nearer target, a larger amplitude_deg, a higher "
                              "accel_deg_s2, or other joints.")
@@ -178,6 +182,10 @@ async def go_slowly(arm, chain: Chain, cfg: TossCfg, q_to, say=print) -> None:
     why = motion_problem(chain, q_now, q_to, tuple(cfg.tool_mm), KeepOut.of(cfg))
     if why:
         raise SystemExit(f"Refused: the way to the wind-up pose isn't clear: {why}. Move the arm nearer to it first.")
+    try:
+        await arm.do_command({"clear_error": True})        # a stop the controller made (e.g. self-collision) blocks moves
+    except Exception:
+        pass
     await arm.do_command({"set_speed": float(cfg.windup_speed_deg_s)})
     await move_joints(arm, q_to)
 

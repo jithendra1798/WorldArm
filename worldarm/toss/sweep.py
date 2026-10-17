@@ -23,6 +23,7 @@ class KeepOut:
     ceiling_z_mm: float = 1300.0
     walls: list = field(default_factory=list)   # [[x0, y0, z0], [x1, y1, z1]] boxes
     margin_mm: float = 120.0          # the arm is checked along its centre line: links, gripper and camera stick out
+    self_mm: float = 130.0            # the wrist, gripper and ball keep this far from the base column and upper arm
 
     @classmethod
     def of(cls, cfg) -> KeepOut:
@@ -42,6 +43,28 @@ def arm_points(chain: Chain, q_deg, tool_mm, per_link: int = 4) -> np.ndarray:
     return np.array(pts)
 
 
+def _seg_dist(p: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Distance from each point (N, 3) to the segment a-b."""
+    ab = b - a
+    t = np.clip(((p - a) @ ab) / max(float(ab @ ab), 1e-9), 0.0, 1.0)
+    return np.linalg.norm(p - (a + t[:, None] * ab), axis=1)
+
+
+def self_problem(chain: Chain, q_deg, tool_mm, keep: KeepOut) -> str | None:
+    """The arm folding into itself: the wrist, gripper and ball too close to the base column or the upper arm.
+    (The xArm's controller stops on self-collision too; this keeps the planner from choosing such poses.)"""
+    M, joints = chain.frames(q_deg)
+    o = [j[0] for j in joints]
+    ball = (M @ np.r_[np.asarray(tool_mm, float), 1.0])[:3]
+    wrist = np.array([o[-2] + f * (ball - o[-2]) for f in np.linspace(0.0, 1.0, 6)])   # wrist pitch -> ball
+    column = (np.array([0.0, 0.0, 0.0]), o[1].copy())                                     # base to shoulder
+    if float(_seg_dist(wrist, *column).min()) < keep.self_mm:
+        return "the wrist or gripper comes too close to the arm's own base"
+    if float(_seg_dist(wrist, o[1], o[2]).min()) < keep.self_mm:
+        return "the wrist or gripper folds back onto the upper arm"
+    return None
+
+
 def pose_problem(chain: Chain, q_deg, tool_mm, keep: KeepOut) -> str | None:
     """What's wrong with one pose (None: nothing)."""
     if not chain.within_limits(q_deg):
@@ -59,7 +82,7 @@ def pose_problem(chain: Chain, q_deg, tool_mm, keep: KeepOut) -> str | None:
         lo_m, hi_m = np.asarray(lo, float) - keep.margin_mm, np.asarray(hi, float) + keep.margin_mm
         if np.all((pts >= lo_m) & (pts <= hi_m), axis=1).any():
             return f"the arm comes within {keep.margin_mm:.0f} mm of the keep-out box {list(lo)}-{list(hi)}"
-    return None
+    return self_problem(chain, q_deg, tool_mm, keep)
 
 
 def motion_problem(chain: Chain, q_from, q_to, tool_mm, keep: KeepOut, step_deg: float = 1.0) -> str | None:

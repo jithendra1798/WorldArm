@@ -160,6 +160,11 @@ def plan_throw(chain: Chain, spec: SwingSpec, target_xy_mm, catch_z_mm: float, e
 
 # ---- how forgiving a throw is, and choosing the swing ----------------------------------------------------
 
+def flight_mm(plan: ThrowPlan) -> float:
+    """How far the ball flies, release point to landing, along the table."""
+    return 0.0 if plan.landing is None else float(np.linalg.norm(plan.landing.xy * 1000.0 - plan.release_mm[:2]))
+
+
 def end_pose(spec: SwingSpec, base_deg: float) -> np.ndarray:
     return pose_at(spec, spec.amplitude_deg, base_deg)
 
@@ -236,30 +241,34 @@ def choose_elevation(chain: Chain, spec: SwingSpec, target_xy_mm, catch_z_mm: fl
     return at(best) if at(best) is not None else (None, None)
 
 
+PITCH_JOINTS = (1, 2, 4)          # xArm shoulder, elbow, wrist pitch (0-based)
+
+
 def design_swing(chain: Chain, joints, amplitude_deg: float, accel_deg_s2: float, target_xy_mm, catch_z_mm: float,
                  keep, rest_deg, tool_mm=(0.0, 0.0, 155.0), max_speed_deg_s: float = 180.0, step_deg: float = 15.0,
-                 elevation: float = 45.0, say=None) -> list[tuple[float, SwingSpec, ThrowPlan, Forgiveness]]:
+                 elevation: float = 45.0, say=None, min_throw_mm: float = 0.0) -> list[tuple[float, SwingSpec, ThrowPlan, Forgiveness]]:
     """Search wind-up poses for the swinging joints (all turning the same way, every step_deg within their
     limits; the other joints as in rest_deg, the base aimed by the planner) for swings that land the ball on
     target_xy_mm (thrower's base frame) with the release in the cruise and the whole swing clear of the table,
     ceiling and walls. Returns the good ones, best first: the least joint speed plus twice the landing shift
     (mm) of a 10 ms late release, which is what the laptop's timing costs. (score, spec, plan, forgiveness)."""
     from worldarm.toss.sweep import motion_problem, pose_problem
-    ranges = [np.arange(chain.limits_deg[j][0] + 5.0, chain.limits_deg[j][1] - 5.0 + 1e-9, step_deg) for j in joints]
-    grid = np.stack(np.meshgrid(*ranges, indexing="ij"), -1).reshape(-1, len(joints))
+    pitch = sorted(set(j for j in joints if j != 0) | set(PITCH_JOINTS))     # held ones are searched too
+    ranges = [np.arange(chain.limits_deg[j][0] + 5.0, chain.limits_deg[j][1] - 5.0 + 1e-9, step_deg) for j in pitch]
+    grid = np.stack(np.meshgrid(*ranges, indexing="ij"), -1).reshape(-1, len(pitch))
     found = []
     for k, start in enumerate(grid):
         if say and k % 500 == 0:
             say(f"  {k}/{len(grid)} wind-up poses tried, {len(found)} good so far")
         for sign in (1, -1):
             q0 = np.array(rest_deg, float)
-            q0[list(joints)] = start
+            q0[pitch] = start
             spec = SwingSpec(q0.tolist(), list(joints), [sign] * len(joints), amplitude_deg, accel_deg_s2,
                              tuple(tool_mm), keep.table_z_mm, keep.clearance_mm)
             if pose_problem(chain, q0, tool_mm, keep) or pose_problem(chain, end_pose(spec, q0[0]), tool_mm, keep):
                 continue                               # cheap checks first (the base turns both the same way)
             plan = plan_throw(chain, spec, target_xy_mm, catch_z_mm, elevation, max_speed_deg_s, release_step_deg=1.0)
-            if not plan.ok:
+            if not plan.ok or flight_mm(plan) < min_throw_mm:
                 continue
             spec.start_deg[0] = plan.base_deg
             if motion_problem(chain, spec.start_deg, end_pose(spec, plan.base_deg), tool_mm, keep, 2.0):

@@ -52,6 +52,7 @@ class TossCfg:
     # the target, in the thrower's base frame
     target_mm: tuple = (800.0, 0.0)         # where the ball should come down (x, y)
     catch_z_mm: float = 25.0                # height it comes down to: ball centre on the table, or the bowl's rim
+    min_throw_mm: float = 400.0             # the ball must fly at least this far from the release (else it's a drop)
     # calibrated constants (toss.py dry, grip, calibrate)
     speed_factor: float = 1.0               # ball speed vs. what the joint speed says
     release_delay_s: float = 0.05           # open command sent -> ball free (a guess until calibrated)
