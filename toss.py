@@ -248,6 +248,12 @@ def holding(width: float | None, cfg: TossCfg) -> bool:
     return width > (cfg.hold_mm + 1.0 if cfg.hold_mm is not None else 0.4 * cfg.ball_diameter_mm)
 
 
+async def open_fast(gripper, cfg: TossCfg) -> None:
+    """Let go: fully open at the gripper's top speed (grab_with_torque takes a speed; "set" moves at its default)."""
+    await gripper.do_command({"grab_with_torque": {"position": int(cfg.counts(cfg.release_mm)),
+                                                   "speed": int(cfg.release_speed), "torque": 100}})
+
+
 async def width_mm(gripper, cfg: TossCfg) -> float | None:
     try:
         return cfg.mm(float((await gripper.do_command({"get": True})).get("pos")))
@@ -408,15 +414,12 @@ async def grip(gripper, cfg: TossCfg, teach: bool = False, repeat: int = 0, out:
         say(f"holds at {mm:.0f} mm; saved: {cfg.save()}")
         res["hold_mm"] = mm
     if repeat:
-        if cfg.hold_mm is None:
-            raise SystemExit("Teach the grip first: python toss.py grip --teach")
         lat, acks = [], []
         for _ in range(repeat):
-            await set_mm(gripper, cfg, cfg.hold_mm)
-            await asyncio.sleep(SETTLE_S)
+            await grip_ball(gripper, cfg)                   # as the throw holds it (taught, or closed gently on it)
             w0 = await width_mm(gripper, cfg)
             t_send = clock()
-            opening = asyncio.ensure_future(set_mm(gripper, cfg, cfg.release_mm))
+            opening = asyncio.ensure_future(open_fast(gripper, cfg))
             while clock() - t_send < 2.0:
                 w = await width_mm(gripper, cfg)
                 if w is not None and w0 is not None and w - w0 > 2.0:
@@ -431,7 +434,7 @@ async def grip(gripper, cfg: TossCfg, teach: bool = False, repeat: int = 0, out:
         say(f"open -> fingers 2 mm apart: median {res['median_s'] * 1000:.0f} ms, sd {res['sd_s'] * 1000:.0f} ms "
             f"(over {len(lat)}); the command itself returned after {statistics.median(acks) * 1000:.0f} ms")
         say(f"release_delay_s is {cfg.release_delay_s:.3f}; calibrate measures the real one from throws")
-        await set_mm(gripper, cfg, cfg.hold_mm + 15.0)
+        await set_mm(gripper, cfg, cfg.ball_diameter_mm + 15.0)
     write_json(run_dir("grip", out) / "grip.json", res)
     return res
 
@@ -505,9 +508,19 @@ async def dry(arm, chain: Chain, cfg: TossCfg, repeat: int = 3, scale: float = 1
 async def find_ball(machine, cfg: TossCfg, camera: str) -> np.ndarray | None:
     """The ball's centre (mm, armfarm05's frame) from the wrist camera and the ball segmenter: of everything it
     segments, what sits on the table at the ball's height, nearest the camera's view centre."""
+    from viam.errors import ResourceNotFoundError
     from viam.proto.common import PoseInFrame
     from viam.services.vision import VisionClient
-    objs = await VisionClient.from_robot(machine, cfg.pick_segmenter).get_object_point_clouds(camera)
+    try:
+        seg = VisionClient.from_robot(machine, cfg.pick_segmenter)
+    except ResourceNotFoundError:
+        await machine.refresh()                            # it may have been restarting when we connected
+        try:
+            seg = VisionClient.from_robot(machine, cfg.pick_segmenter)
+        except ResourceNotFoundError:
+            raise SystemExit(f"armfarm05 has no vision service {cfg.pick_segmenter!r} right now (Viam app -> armfarm05 -> "
+                             "check it's configured and running)")
+    objs = await seg.get_object_point_clouds(camera)
     found = []
     for o in objs:
         gs = o.geometries.geometries
@@ -612,7 +625,7 @@ async def throw(arm, gripper, overhead, table, cfg: TossCfg, chain: Chain, repea
                     break
 
             async def let_go(t_cmd, rec):
-                return await release(lambda: set_mm(gripper, cfg, cfg.release_mm), spec, prof, plan.trigger_progress_deg,
+                return await release(lambda: open_fast(gripper, cfg), spec, prof, plan.trigger_progress_deg,
                                      cfg.trigger, t_cmd, cfg.start_latency_s, rec, clock, prof.duration + 3.0)
 
             t_cmd, rec, sent = await swing(arm, spec, plan.base_deg, plan.speed_deg_s, spec.accel_deg_s2, clock, let_go,
