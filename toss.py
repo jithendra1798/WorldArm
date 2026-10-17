@@ -291,6 +291,12 @@ def holding(width: float | None, cfg: TossCfg) -> bool:
     return width > (cfg.hold_mm + 1.0 if cfg.hold_mm is not None else 0.4 * cfg.ball_diameter_mm)
 
 
+def hold_counts(cfg: TossCfg) -> float:
+    """Where the fingers stop when holding the ball: hold_mm as the gripper reads it, else just under the ball's
+    nominal size."""
+    return cfg.counts(cfg.hold_mm if cfg.hold_mm is not None else cfg.pick_ball_height_mm - cfg.squeeze_mm)
+
+
 def release_counts(cfg: TossCfg) -> float:
     """How far the fingers open to let go: just past the ball (less travel than fully open: the ball is free sooner)."""
     return cfg.counts(min(cfg.max_open_mm, cfg.pick_ball_height_mm + cfg.free_mm))
@@ -466,7 +472,7 @@ async def grip(gripper, cfg: TossCfg, teach: bool = False, repeat: int = 0, out:
         res["hold_mm"] = mm
     if repeat:
         lat, acks = [], []
-        close_pos = cfg.counts(cfg.pick_ball_height_mm - cfg.squeeze_mm)   # as the pick closes on the ball
+        close_pos = hold_counts(cfg)                         # as the pick closes on the ball
         free_at = cfg.pick_ball_height_mm + 3.0              # the fingers are clear of the ball here
         for _ in range(repeat):
             await gripper.do_command({"set": float(close_pos)})  # as the pick closes on the ball
@@ -692,7 +698,7 @@ async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: s
     near_table = dataclasses.replace(reaching, clearance_mm=cfg.pick_clearance_mm)
     tool = (0.0, 0.0, cfg.gripper_frame_mm)
     out = run_dir("pick")
-    close_pos = cfg.counts(cfg.pick_ball_height_mm - cfg.squeeze_mm)   # barely under the ball's size
+    close_pos = hold_counts(cfg)
     try:
         await gripper.do_command({"set": float(cfg.full_open_counts)})
         est = None
@@ -736,7 +742,7 @@ async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: s
         say("3. going over it, then straight down around it")
         await line_to(arm, chain, cfg, (est["x"], est["y"], gz + hover), reaching, "above the ball")
         await line_to(arm, chain, cfg, (est["x"], est["y"], gz), near_table, "down to the ball")
-        say(f"4. closing the fingers to {cfg.pick_ball_height_mm - cfg.squeeze_mm:.0f} mm on it (barely holding)")
+        say(f"4. closing the fingers to {cfg.mm(close_pos):.0f} mm (as the gripper reads it) around it")
         await gripper.do_command({"set": float(close_pos)})  # barely: just under the ball's size, no hard press
         await asyncio.sleep(0.6)
         pos = (await gripper.do_command({"get": True})).get("pos")
@@ -1023,7 +1029,7 @@ def parser() -> argparse.ArgumentParser:
             s.add_argument("--repeat", type=int, default=1)
         if name == "throw":
             s.add_argument("--hand", action="store_true", help="hand the ball to the gripper instead of it picking it up")
-            s.add_argument("--squeeze", type=float, help="grip: close this many mm under the ball's size (default 2)")
+            s.add_argument("--hold-mm", type=float, help="grip: where the fingers stop, mm as the gripper reads it (bigger = looser)")
             s.add_argument("--measure", action="store_true", help="type where each throw landed")
             s.add_argument("--tcp-limit", type=float, default=1100.0, help="the arm's tool speed cap (mm/s)")
             s.add_argument("--release-shift", type=float, default=0.0, help="release this long after peak speed (s)")
@@ -1037,7 +1043,7 @@ def parser() -> argparse.ArgumentParser:
             s.add_argument("--dry", action="store_true", help="move the bowl, don't throw")
     s = sub.add_parser("pick")
     s.add_argument("--yes", action="store_true", help="skip the 'type go' question")
-    s.add_argument("--squeeze", type=float, help="grip: close this many mm under the ball's size (default 2)")
+    s.add_argument("--hold-mm", type=float, help="grip: where the fingers stop, mm as the gripper reads it (bigger = looser)")
     s = sub.add_parser("grip")
     s.add_argument("--teach", action="store_true")
     s.add_argument("--repeat", type=int, default=0)
@@ -1110,8 +1116,8 @@ async def main(argv: list[str] | None = None) -> None:
         elif args.cmd == "grip":
             await grip(gripper, cfg, args.teach, args.repeat)
         elif args.cmd == "pick":                                # find it, pick it, go to the throwing position
-            if args.squeeze is not None:
-                cfg.squeeze_mm = args.squeeze
+            if args.hold_mm is not None:
+                cfg.hold_mm = args.hold_mm
             if await pick_ball(arm, gripper, thrower, chain, cfg, machines.component(tv, "VIAM_CAMERA", "cam")):
                 fit_under_cap(cfg, chain, 1100.0, say=lambda *_: None)
                 plan, _ = throw_plan(cfg, chain)
@@ -1128,8 +1134,8 @@ async def main(argv: list[str] | None = None) -> None:
         elif args.cmd == "throw" and (args.taught or args.flick):   # Waj's taught throw, or his wrist flick
             cam = machines.component(tv, "VIAM_CAMERA", "cam")
             picker = None if args.hand else (lambda: pick_ball(arm, gripper, thrower, chain, cfg, cam))
-            if args.squeeze is not None:
-                cfg.squeeze_mm = args.squeeze
+            if args.hold_mm is not None:
+                cfg.hold_mm = args.hold_mm
 
             async def fresh():
                 m, _ = await machines.connect(cfg.thrower_env, cfg.thrower)
@@ -1140,8 +1146,8 @@ async def main(argv: list[str] | None = None) -> None:
             cam = machines.component(tv, "VIAM_CAMERA", "cam")
             picker = None if args.hand else (lambda seen=None, grab=True: pick_ball(arm, gripper, thrower, chain, cfg, cam,
                                                                                   seen=seen, grab=grab))
-            if args.squeeze is not None:
-                cfg.squeeze_mm = args.squeeze
+            if args.hold_mm is not None:
+                cfg.hold_mm = args.hold_mm
             fit_under_cap(cfg, chain, args.tcp_limit)
             await throw(arm, gripper, overhead, table, cfg, chain, args.repeat, True, target, catch_z,
                         radius_px=tuple(bcfg.ball_radius_px), table_px=table_px, picker=picker,
