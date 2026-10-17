@@ -19,7 +19,7 @@ from tests.synth import Box, Scene3D, block as draw_block
 from worldarm.act.watch import WatchResult
 from worldarm.cell.calibration import CameraCorrection
 from worldarm.cell.config import CellConfig
-from worldarm.cell.geometry import finger_axis_deg, vec_of
+from worldarm.cell.geometry import finger_axis_deg, pose_matrix, vec_of
 from worldarm.cell.rig import Rig
 
 
@@ -114,8 +114,8 @@ class FakeWorld:
                 blk.y += delta * self.box.pull[1]
 
     # ---- the camera --------------------------------------------------------------------------------
-    def render(self):
-        s = Scene3D()
+    def render(self, cam=None, rot=None):
+        s = Scene3D() if cam is None else Scene3D(cam_xy=(cam[0], cam[1]), cam_z=cam[2], rot=rot)
         for blk in self.blocks:
             if blk.slot is None:
                 draw_block(s, blk.color, (blk.x, blk.y), (blk.short, blk.long), blk.axis + 90.0, blk.top)
@@ -133,10 +133,18 @@ class FakeWorld:
         return sorted(b.color for b in self.blocks if b.slot is None)
 
 
+# The wrist camera on the gripper, like armfarm03's: 72 mm off the gripper axis, 87 mm above the gripper
+# frame, looking along it (turned half a turn about its axis, so the overview renders as it always has).
+CAM_R = np.array([[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]])
+CAM_T = np.array([68.4, -23.9, -87.0])
+# where the gripper is for the overview: the camera then sits at synth's default (260, -420, 620)
+VIEW = {"x": 328.4, "y": -396.1, "z": 533.0, "o_x": 0.0, "o_y": 0.0, "o_z": -1.0, "theta": 0.0}
+
+
 def fake_cfg() -> CellConfig:
     cfg = CellConfig()
     cfg.workcell.table_z_mm = 0.0           # the synthetic table is at z = 0
-    cfg.view_pose = {"x": 260.0, "y": -360.0, "z": 400.0, "o_x": 0.0, "o_y": 0.0, "o_z": -1.0, "theta": 0.0}
+    cfg.view_pose = dict(VIEW)
     cfg.gripper.settle_s = 0.0
     return cfg
 
@@ -145,18 +153,28 @@ class FakeRig:
     def __init__(self, world: FakeWorld, cfg: CellConfig | None = None):
         self.world, self.cfg = world, cfg or fake_cfg()
         self.correction = CameraCorrection()
-        self.x, self.y, self.z, self.theta = 260.0, -360.0, 400.0, 0.0
+        self.x, self.y, self.z, self.theta = VIEW["x"], VIEW["y"], VIEW["z"], VIEW["theta"]
         self.opening = self.cfg.gripper.max_open_mm
         self.held: FBlock | None = None
         self.held_offset = 0.0
         self.knob: int | None = None
         self.events: list[str] = []
+        self.grabs: list[tuple] = []        # (torque, speed) of every grab
+        self.looks = 0
+        self.look_dir = None
 
     check = Rig.check
 
     # ---- reading ---------------------------------------------------------------------------------
     async def look(self):
-        return self.world.render()
+        """What the wrist camera sees from where the gripper is now."""
+        Rg, tg = pose_matrix({"x": self.x, "y": self.y, "z": self.z, "o_x": 0.0, "o_y": 0.0, "o_z": -1.0,
+                              "theta": self.theta})
+        self.looks += 1
+        return self.world.render(tg + Rg @ CAM_T, Rg @ CAM_R)
+
+    async def camera_in_gripper(self):
+        return CAM_R, CAM_T
 
     async def gripper_pose(self) -> Pose:
         return Pose(x=self.x, y=self.y, z=self.z, o_x=0.0, o_y=0.0, o_z=-1.0, theta=self.theta)
@@ -230,6 +248,13 @@ class FakeRig:
             new = self.world.openings[self.knob] + along
             if new > 165:
                 raise Crash(f"{label}: drawer pulled off ({new:.0f} mm)")
+            if new < -0.5 and watch is not None:                   # a watched push stops on pressing
+                along = -self.world.openings[self.knob]
+                self.world.move_drawer(self.knob, along)
+                self.x, self.y = self.x + along * b.pull[0], self.y + along * b.pull[1]
+                self.pressing = 1.0
+                self.events.append(f"{label}: contact at shut")
+                return WatchResult(True, self.z, 2.0, 2.0, None, 1.0)
             if new < -0.5:
                 self.pressing = -new                               # the arm presses on a shut drawer
                 if self.pressing > 6.0:
@@ -283,7 +308,8 @@ class FakeRig:
     async def width_mm(self):
         return self.opening
 
-    async def grab(self, torque_pct):
+    async def grab(self, torque_pct, speed=None, position_mm=None):
+        self.grabs.append((torque_pct, speed))
         g = self.cfg.gripper
         u_deg = finger_axis_deg(self.theta)
         u = vec_of(u_deg)
@@ -314,7 +340,7 @@ class FakeRig:
                 self.knob, self.opening = i, 21.0
                 self.events.append(f"holding knob {i}")
                 return
-        self.opening = 0.0
+        self.opening = position_mm or 0.0
         self.events.append("closed on nothing")
 
     async def holding(self):

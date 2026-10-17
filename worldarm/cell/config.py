@@ -29,8 +29,9 @@ class GripperCfg:
     finger_width_mm: float = 18.0          # finger size along the jaw (across the closing axis), for clearance
     finger_depth_mm: float = 12.0          # finger thickness along the closing axis
     block_torque_pct: int = 30             # grip force for blocks
-    knob_torque_pct: int = 25              # drawer service's proven knob grip
+    knob_torque_pct: int = 12              # knobs: gentle (the drawer service's 25, then 18, still held too hard)
     grip_speed: int = 1500
+    knob_grip_speed: int = 400             # knobs: the fingers close slowly onto the ball instead of snapping
     settle_s: float = 0.4
 
     @property
@@ -62,15 +63,19 @@ class WorkcellCfg:
 
 @dataclass
 class SpeedCfg:
-    travel_deg_s: float = 30.0             # free moves
+    travel_deg_s: float = 38.0             # free moves (30 worked; a little brisker)
     slow_deg_s: float = 10.0               # near anything: descents, drawer pulls
-    view_deg_s: float = 40.0               # back to the overview pose
+    view_deg_s: float = 50.0               # back to the overview pose, and the start's survey turns
+    seat_deg_s: float = 4.0                # the last push that shuts a drawer: one slow, watched move
+    accel_deg_s2: float | None = 80.0      # the arm's acceleration: moves ramp up and down gently instead of
+                                           # starting and stopping hard. None: leave the driver's own
 
 
 @dataclass
 class CameraCfg:
     correction: dict | None = None         # cell.calibration.CameraCorrection.to_json(), from `drill calibrate`
     min_depth_mm: float = 250.0            # the depth camera can't see closer (drawer service: needs > ~280)
+    look_mm: float = 330.0                 # close looks (act/look.py): camera this far from the target; 0 = off
 
 
 @dataclass
@@ -86,6 +91,7 @@ class OrganizerCfg:
     hold_min_mm: float = 14.8              # holding the knob reads 21 mm; outside this range = lost it
     hold_max_mm: float = 29.6
     release_open_mm: float = 30.0
+    close_lift_mm: float = 1.5             # closing: lift the drawer this much by its knob first, or it catches
     hover_mm: float = 120.0                # start of the watched descent, above the grip height
     lift_mm: float = 60.0                  # straight up after letting go
     open_target_mm: float = 120.0          # 75% of the travel: the drawers come off past that
@@ -95,7 +101,10 @@ class OrganizerCfg:
     face_mm: float = 10.0                  # drawer front thickness
     floor_above_table_mm: float = 10.0     # used when the floor can't be measured
     rim_above_table_mm: float = 70.0       # drawer walls' top, used when it can't be measured
-    clear_mm: float = 160.0                # nothing within this of a knob is a table block
+    clear_mm: float = 160.0                # nothing within this of a knob is a table block (no organizer found)
+    knob_keep_out_mm: float = 50.0         # with the organizer found (box and open drawers kept out by their
+                                           # outlines), only this close to a knob: a block in front of an open
+                                           # drawer stays a block (160 mm lost the green one whenever drawer 2 opened)
 
 
 @dataclass
@@ -127,6 +136,12 @@ class TaskCfg:
     max_steps: int = 60
     max_tries_per_block: int = 2
     max_tries_per_drawer_move: int = 2
+    survey_turns_deg: tuple[float, ...] = (-60.0, -30.0)  # start: the overview turned about the base by these,
+                                           # toward -y only, to find every block once (the overview sees part).
+                                           # Never toward +y: chargers and a power strip are there
+    sort_area_xy: tuple[float, ...] = (-100.0, 620.0, -720.0, 0.0)  # x min, x max, y min, y max: blocks count
+                                           # only here, y < 0 (the power strip's plugs at y +178 passed for
+                                           # a black block)
 
 
 @dataclass

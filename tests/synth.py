@@ -22,11 +22,12 @@ PAINT = {"green": (40, 160, 40), "yellow": (30, 200, 230), "blue": (200, 90, 30)
 class Scene3D:
     """Paint prisms and balls into color + depth for a camera looking straight down."""
 
-    def __init__(self, cam_xy=(260.0, -420.0), cam_z=620.0, f=900.0, size=(1280, 720)):
+    def __init__(self, cam_xy=(260.0, -420.0), cam_z=620.0, f=900.0, size=(1280, 720), rot=None):
         self.cam = np.array([cam_xy[0], cam_xy[1], cam_z], float)
         self.w, self.h = size
         self.intr = Intrinsics(f, f, self.w / 2.0, self.h / 2.0, self.w, self.h)
-        self.rot = np.array([[1.0, 0, 0], [0, -1.0, 0], [0, 0, -1.0]])  # camera x = world x, y = -world y
+        # camera x = world x, y = -world y; any other turn about the vertical keeps it looking straight down
+        self.rot = np.array([[1.0, 0, 0], [0, -1.0, 0], [0, 0, -1.0]]) if rot is None else np.asarray(rot, float)
         self.color = np.full((self.h, self.w, 3), TABLE, np.uint8)
         self.depth = np.full((self.h, self.w), int(cam_z), np.uint16)    # table at z = 0
 

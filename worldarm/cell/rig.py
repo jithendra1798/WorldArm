@@ -25,7 +25,7 @@ from worldarm import connection
 from worldarm.act.watch import ContactWatch, WatchResult
 from worldarm.cell.calibration import CameraCorrection
 from worldarm.cell.config import CellConfig
-from worldarm.cell.geometry import pose_dict
+from worldarm.cell.geometry import pose_dict, pose_matrix
 from worldarm.frames import frame_to_world
 from worldarm.perception import capture
 from worldarm.see.frame import Frame, Intrinsics
@@ -57,12 +57,20 @@ class Rig:
         self.motion = MotionClient.from_robot(machine, motion)
         self.correction = CameraCorrection.from_json(cfg.camera.correction)
         self._intr: Intrinsics | None = None
+        self._cam_in_gripper: tuple[np.ndarray, np.ndarray] | None = None
+        self.look_dir = None  # where close looks are saved (sort.py and drill.py set it to the run's folder)
 
     @classmethod
     async def connect(cls, cfg: CellConfig) -> Rig:
         machine = await connection.connect()
-        return cls(machine, cfg, connection.env("VIAM_ARM"), connection.env("VIAM_GRIPPER"),
-                   connection.env("VIAM_CAMERA"), os.getenv("VIAM_MOTION", "builtin"))
+        rig = cls(machine, cfg, connection.env("VIAM_ARM"), connection.env("VIAM_GRIPPER"),
+                  connection.env("VIAM_CAMERA"), os.getenv("VIAM_MOTION", "builtin"))
+        if cfg.speeds.accel_deg_s2:
+            try:  # gentle ramps at the start and end of every move; a driver without it just ignores this
+                await rig.arm.do_command({"set_acceleration": float(cfg.speeds.accel_deg_s2)})
+            except Exception:
+                pass
+        return rig
 
     async def close(self) -> None:
         await self.machine.close()
@@ -77,6 +85,17 @@ class Rig:
         Rc, tc = self.correction.apply(R, t)
         pose = await self.gripper_pose()
         return Frame(color, depth, self._intr, Rc, tc, R, t, pose_dict(pose), time.time())
+
+    async def camera_in_gripper(self) -> tuple[np.ndarray, np.ndarray]:
+        """Where the wrist camera sits on the gripper: (R, t) with p_gripper = R @ p_camera + t, corrected.
+        The mount is rigid, so it's read once from the frame system. Measured: 72 mm to the side of the
+        gripper axis and 87 mm above the gripper frame, looking along it within 2 degrees."""
+        if self._cam_in_gripper is None:
+            R, t = await frame_to_world(self.machine, self.camera_name)
+            Rc, tc = self.correction.apply(R, t)
+            Rg, tg = pose_matrix(await self.gripper_pose())
+            self._cam_in_gripper = (Rg.T @ Rc, Rg.T @ (tc - tg))
+        return self._cam_in_gripper
 
     # ---- where things are ------------------------------------------------------------------------
     async def gripper_pose(self) -> Pose:
@@ -201,10 +220,25 @@ class Rig:
         except Exception:
             return None
 
-    async def grab(self, torque_pct: int) -> None:
+    async def grab(self, torque_pct: int, speed: int | None = None, position_mm: float | None = None) -> None:
+        """Close with limited torque toward position_mm (default: fully shut)."""
         g = self.cfg.gripper
-        await self.gripper.do_command({"grab_with_torque": {"position": 0, "speed": g.grip_speed, "torque": torque_pct}})
-        await asyncio.sleep(g.settle_s)
+        speed = speed or g.grip_speed
+        target = g.counts(position_mm) if position_mm is not None else 0
+        start = await self.width_mm()
+        t0 = time.time()
+        await self.gripper.do_command({"grab_with_torque": {"position": target, "speed": speed, "torque": torque_pct}})
+        # wait until the fingers have closed and stopped (on the object), not a fixed time; at most as long
+        # as the slowest close takes. A fixed 1.5 s left the arm standing still holding the knob.
+        deadline = t0 + g.settle_s * max(1.0, g.grip_speed / speed)
+        last = None
+        while time.time() < deadline:
+            await asyncio.sleep(0.1)
+            w = await self.width_mm()
+            moved = start is None or w is None or w < start - 2.0 or time.time() - t0 > 0.6
+            if w is not None and last is not None and abs(w - last) < 0.3 and moved:
+                return
+            last = w
 
     async def holding(self) -> bool | None:
         try:

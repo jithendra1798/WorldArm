@@ -15,6 +15,7 @@ import numpy as np
 
 from worldarm.blocks import Block
 from worldarm.cell.config import CellConfig
+from worldarm.cell.geometry import point_in_polygon
 from worldarm.see.organizer import Organizer, RowModel
 from worldarm.see.scene import Scene
 
@@ -100,10 +101,20 @@ class SortBelief:
         self.drawer_fails: Counter = Counter()
 
     # ---- observing --------------------------------------------------------------------------------
-    def observe(self, scene: Scene, step: int) -> list[Surprise]:
+    def observe(self, scene: Scene, step: int, visible: np.ndarray | None = None) -> list[Surprise]:
+        """visible: the table area this look could see (world x, y polygon). Blocks outside it aren't
+        forgotten: the start's survey found them, and they're still there. None: the scene is complete."""
         self.step = step
         new: list[Surprise] = []
-        self.table = [b for b in scene.table_blocks if b.color in self.cfg.task.colors]
+        x0, x1, y0, y1 = self.cfg.task.sort_area_xy  # our side of the table (y < 0): never the chargers'
+        seen = [b for b in scene.table_blocks if b.color in self.cfg.task.colors
+                and x0 <= b.center[0] <= x1 and y0 <= b.center[1] <= y1]
+        if visible is None:
+            self.table = seen
+        else:
+            kept = [b for b in self.table if not point_in_polygon(b.center[:2], visible)[0]
+                    and all(float(np.linalg.norm(b.center[:2] - s.center[:2])) > 50.0 for s in seen)]
+            self.table = seen + kept
         org = scene.organizer
         self.organizer = org
         if org is None:

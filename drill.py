@@ -115,6 +115,7 @@ async def main() -> None:
     out = Path(logger.dir)
     from worldarm.cell.rig import Rig  # needs the robot SDK connection; offline runs don't
     rig = await Rig.connect(cfg)
+    rig.look_dir = out / "looks"  # close looks before touching (worldarm/act/look.py)
     t0 = time.time()
     try:
         backend = (ServiceDrawers(rig.machine) if getattr(args, "service", False) else ClientDrawers(rig))

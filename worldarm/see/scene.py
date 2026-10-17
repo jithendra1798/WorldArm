@@ -50,8 +50,11 @@ def observe(frame: Frame, cfg: CellConfig, prior: RowModel | None = None) -> Sce
     """Everything in one frame. Read-only."""
     surf = measure_surface(frame.color, frame.depth, frame.intr, frame.rot, frame.trans)
     report: dict = {}
-    blocks, coef = blocks_on_surface(surf, report, clear_mm=cfg.organizer.clear_mm)
     organizer, warnings = find_organizer(surf, cfg.organizer, prior)
+    # with the organizer found, its box and open drawers are kept out by their outlines (below), so only a
+    # knob's own surroundings are; without it, the wide knob rule keeps the box's parts from being blocks
+    clear = cfg.organizer.knob_keep_out_mm if organizer is not None else cfg.organizer.clear_mm
+    blocks, coef = blocks_on_surface(surf, report, clear_mm=clear)
     contents: dict[int, list[Block]] = {}
     if organizer is not None:
         warnings += organizer.warnings
@@ -101,8 +104,9 @@ def free_spot(scene: Scene, frame: Frame, cfg: CellConfig, near_xy=None, clearan
     cand = np.stack([xs.ravel(), ys.ravel()], axis=1)
     cand = cand[point_in_polygon(cand, view)]
     wc = cfg.workcell
-    cand = cand[(cand[:, 0] >= wc.x_min_mm + 40) & (cand[:, 0] <= wc.x_max_mm - 40)
-                & (cand[:, 1] >= wc.y_min_mm + 40) & (cand[:, 1] <= wc.y_max_mm - 40)
+    ax0, ax1, ay0, ay1 = cfg.task.sort_area_xy  # stay on our side of the table, where blocks count (y < 0)
+    cand = cand[(cand[:, 0] >= max(wc.x_min_mm, ax0) + 40) & (cand[:, 0] <= min(wc.x_max_mm, ax1) - 40)
+                & (cand[:, 1] >= max(wc.y_min_mm, ay0) + 40) & (cand[:, 1] <= min(wc.y_max_mm, ay1) - 40)
                 & (np.linalg.norm(cand, axis=1) <= wc.reach_mm - 60) & (np.linalg.norm(cand, axis=1) >= 200)]
     if not len(cand):
         return None
