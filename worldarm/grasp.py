@@ -16,8 +16,10 @@ import numpy as np
 from viam.spatialmath import OrientationVector
 from viam.spatialmath.vector3 import Vector3
 
-ROUND_ASPECT = 1.25  # a mask this close to square ...
-ROUND_FILL = 0.85    # ... that fills this little of its rectangle is round: any yaw grips it
+ROUND_ASPECT = 1.25  # an outline this close to square ...
+ROUND_FILL = 0.88    # ... whose convex hull fills this little of its rectangle looks round (a disc: 0.785).
+                     # Only a label: the rectangle's short side is used either way, since a round
+                     # object can be gripped at any angle but a box mistaken for round can't.
 
 
 def finger_axis_deg(theta_deg: float, ov: tuple[float, float, float] = (0.0, 0.0, -1.0)) -> float:
@@ -47,7 +49,9 @@ def theta_for_finger_axis(axis_deg: float, base_theta_deg: float,
 def short_axis_px(mask: np.ndarray):
     """Short-side direction of a block's mask, from its minimum-area rectangle.
 
-    Returns (center_uv, unit_uv, short_px, long_px, fill) or None for an empty mask.
+    Returns (center_uv, unit_uv, short_px, long_px, fill) or None for an empty mask. `fill` is the
+    convex hull's area over the rectangle's: depth holes (black rubber, dark wood) don't lower it,
+    so a patchy box still reads as a box (~1.0) and only a disc reads round (~0.785).
     """
     ys, xs = np.nonzero(mask)
     if xs.size < 20:
@@ -58,7 +62,7 @@ def short_axis_px(mask: np.ndarray):
     e1, e2 = box[1] - box[0], box[2] - box[1]
     n1, n2 = float(np.hypot(*e1)), float(np.hypot(*e2))
     short_vec, short_len, long_len = (e1, n1, n2) if n1 <= n2 else (e2, n2, n1)
-    fill = xs.size / max(1.0, n1 * n2)
+    fill = float(cv2.contourArea(cv2.convexHull(pts))) / max(1.0, n1 * n2)
     return rect[0], short_vec / max(short_len, 1e-6), short_len, long_len, fill
 
 
@@ -69,15 +73,14 @@ async def block_grasp_theta(mask: np.ndarray, depth: np.ndarray,
     """Wrist theta that closes the fingers across the block's short side, plus what was measured.
 
     `to_world(u, v, depth_mm)` maps a pixel at a depth to world (x, y) in mm.
-    Round blocks (and anything unmeasurable) keep `base_theta_deg`.
+    Anything unmeasurable keeps `base_theta_deg`.
     """
     found = short_axis_px(mask)
     if found is None:
         return base_theta_deg, {"shape": "unmeasured"}
     (cu, cv), (du, dv), short_px, long_px, fill = found
     aspect = long_px / max(short_px, 1e-6)
-    if aspect < ROUND_ASPECT and fill < ROUND_FILL:
-        return base_theta_deg, {"shape": "round", "aspect": round(aspect, 2), "fill": round(fill, 2)}
+    shape = "round" if aspect < ROUND_ASPECT and fill < ROUND_FILL else "box"
     z = float(np.median(depth[(mask > 0) & (depth > 0)])) if np.any((mask > 0) & (depth > 0)) else 0.0
     if z <= 0:
         return base_theta_deg, {"shape": "no depth"}
@@ -86,7 +89,7 @@ async def block_grasp_theta(mask: np.ndarray, depth: np.ndarray,
     bx, by = await to_world(cu + du * half, cv + dv * half, z)
     short_deg = math.degrees(math.atan2(by - ay, bx - ax))
     theta = theta_for_finger_axis(short_deg, base_theta_deg, ov)
-    return theta, {"shape": "box", "short_axis_deg": round(short_deg, 1), "short_mm": round(math.hypot(bx - ax, by - ay), 1),
+    return theta, {"shape": shape, "short_axis_deg": round(short_deg, 1), "short_mm": round(math.hypot(bx - ax, by - ay), 1),
                    "aspect": round(aspect, 2), "fill": round(fill, 2), "theta": round(theta, 1)}
 
 

@@ -193,10 +193,17 @@ class Bench:
             place_theta = place_theta_for_drawer(tuple(reply["open_dir"]), pick_theta, self.ov)
             print(f"  grasp {color}: {grasp.get('shape')}, short side {grasp.get('short_mm', '-')} mm along "
                   f"{grasp.get('short_axis_deg', '-')} deg -> wrist {pick_theta:.0f} deg; at the drawer {place_theta:.0f} deg")
-            result = await ppc.move_one_object(obj, target, neighbors, obstacles, self.arm, self.gripper,
-                                               self.motion, self.gripper_name, self.world, self.cfg,
-                                               self.margin, self.timeout,
-                                               pick_theta_deg=pick_theta, place_theta_deg=place_theta)
+            try:
+                result = await ppc.move_one_object(obj, target, neighbors, obstacles, self.arm, self.gripper,
+                                                   self.motion, self.gripper_name, self.world, self.cfg,
+                                                   self.margin, self.timeout,
+                                                   pick_theta_deg=pick_theta, place_theta_deg=place_theta)
+            except Exception as e:  # e.g. no motion plan: a failed transfer, but still close the drawer below
+                result = f"error: {type(e).__name__}: {str(e)[:160]}"
+                try:
+                    await ppc.open_gripper_for_pick(self.gripper)
+                except Exception:
+                    pass
             print(f"  transfer {color}: {result}")
             log_step(logger, n, "transfer", result == "ok", t0,
                      {"result": result, "drop_target": dp, "grasp": grasp, "pick_theta": pick_theta,
@@ -255,14 +262,27 @@ async def main() -> None:
         if "error" in status:
             raise SystemExit(f"{args.drawer_service} has no open/close yet: deploy modules/drawer_service.py "
                              "to its inline module first.")
-        if status.get("open_drawers"):
-            raise SystemExit(f"{args.drawer_service} remembers open drawers {sorted(status['open_drawers'])}. "
-                             "Close them (action close) or, after fixing by hand, send {\"action\": \"forget\"}.")
         if ppc.load_view_pose() is None:
             raise SystemExit("No overview pose for armfarm03 yet: put the arm there, then run --teach-view.")
         print(f"Sorting on {machine_name}: " + ", ".join(f"{c} -> drawer {k}" for c, k in assignment.items()))
         if not args.yes and input("This MOVES the arm. Someone at the E-stop? Type 'go': ").strip() != "go":
             raise SystemExit("Cancelled.")
+        for k in sorted(status.get("open_drawers") or {}, key=int):  # left open by an interrupted run
+            answer = ""
+            while answer not in ("o", "c", "q"):
+                answer = input(f"Drawer {k} was left open by an earlier run. Is it open right now? "
+                               "[o = yes, close it with the arm / c = no, it's closed / q = quit] ").strip().lower()
+            if answer == "q":
+                raise SystemExit("Stopped.")
+            if answer == "c":
+                await bench.drawers.do_command({"action": "forget"})
+                print(f"  forgot drawer {k}")
+                break
+            reply = dict(await bench.drawers.do_command({"action": "close", "drawer": int(k)}))
+            if not reply.get("success"):
+                raise SystemExit(f"Couldn't close drawer {k}: {reply.get('error') or reply.get('stage')}. "
+                                 "Close it by hand, then answer c next time.")
+            print(f"  closed drawer {k}")
 
         if args.preview:
             picture = Path("captures") / "preview.jpg"

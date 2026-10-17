@@ -55,11 +55,11 @@ def test_fingers_close_across_the_short_side(angle):
     assert axis_err(finger_axis_deg(theta), angle + 90) < 2.0  # finger axis = short side
 
 
-def test_round_block_keeps_the_default_wrist():
+def test_round_block_is_labelled_round_and_gripped_near_the_default_wrist():
     mask = np.zeros((720, 1280), np.uint8)
     cv2.circle(mask, (640, 360), 40, 255, -1)
     theta, info = asyncio.run(block_grasp_theta(mask, np.full((720, 1280), 400, np.uint16), pixel_is_world, 15.0))
-    assert info["shape"] == "round" and theta == 15.0
+    assert info["shape"] == "round" and abs(theta - 15.0) <= 90  # any angle grips a disc
 
 
 @pytest.mark.parametrize("pull", [(1, 0), (0, 1), (0.6, -0.8)])
@@ -68,3 +68,13 @@ def test_place_puts_the_long_side_along_the_pull(pull):
     pull_deg = math.degrees(math.atan2(pull[1], pull[0]))
     assert axis_err(finger_axis_deg(theta), pull_deg + 90) < 0.6  # fingers across the pull
     assert abs(theta - 10) <= 90
+
+
+def test_a_box_with_depth_holes_is_still_a_box():
+    """Black rubber returns patchy depth; the outline is full of holes but still a rotated box."""
+    mask = rotated_block(30, w=90, h=70)
+    rng = np.random.default_rng(0)
+    mask[(rng.random(mask.shape) < 0.35) & (mask > 0)] = 0  # knock out 35% of the pixels
+    theta, info = asyncio.run(block_grasp_theta(mask, np.full((720, 1280), 400, np.uint16), pixel_is_world, 0.0))
+    assert info["shape"] == "box"
+    assert axis_err(finger_axis_deg(theta), 30 + 90) < 3.0
