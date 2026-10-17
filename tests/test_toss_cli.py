@@ -10,7 +10,7 @@ import pytest
 from viam.proto.common import Pose
 
 import toss
-from tests.toss_arm import ARMS, CHAIN, SWING, TABLE, TOOL, XARMISH, FakeArm, World, run
+from tests.toss_arm import ARMS, BALL_MM, CHAIN, SWING, TABLE, TOOL, XARMISH, FakeArm, World, run
 from worldarm.toss.config import TossCfg
 from worldarm.toss.landing import ArmsFrame
 
@@ -26,7 +26,8 @@ def cfg(tmp_path, monkeypatch):
     c = TossCfg(kinematics=str(kin), start_deg=list(SWING["start_deg"]), signs=list(SWING["signs"]),
                 joints=list(SWING["joints"]), tool_mm=TOOL, target_mm=(800.0, 0.0), catch_z_mm=25.0, hold_mm=46.0,
                 thrower_in_catcher=ARMS.to_json(), throw_mm=None,   # aim at a point; this test arm throws over its base
-                clear_base_mm=0.0, walls=[], ceiling_z_mm=1300.0)
+                clear_base_mm=0.0, walls=[], ceiling_z_mm=1300.0,
+                ball_diameter_mm=BALL_MM, pick_ball_height_mm=BALL_MM)       # the fake gripper's ball
     c.save()
     return c
 
@@ -92,7 +93,6 @@ def test_dry_swings_measure_the_start_delay_speed_and_acceleration(cfg):
 
 def test_grip_teach_finds_the_opening_that_holds_and_measures_the_open_delay(cfg):
     world = World(FakeArm())
-    cfg.pick_ball_height_mm = 50.0                                           # the fake ball's size
     answers = iter(["", "", "", "y"])                                        # holds at 2 mm under ball + 2
     res = run(toss.grip(world.gripper, cfg, teach=True, repeat=5, say=quiet, ask=lambda *_: next(answers)))
     assert res["hold_mm"] == 50.0 and TossCfg.load().hold_mm == 50.0

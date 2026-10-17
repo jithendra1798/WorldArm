@@ -25,7 +25,7 @@ class TossCfg:
     camera: str = "overview-cam"
     kinematics: str = "config/kinematics_armfarm05.json"   # the thrower's own model (toss.py probe)
     # the ball and the grip
-    ball_diameter_mm: float = 50.0          # measure it
+    ball_diameter_mm: float = 60.0          # the foam ball: the fingers just hold it at 58 mm (as they read)
     hold_mm: float | None = None            # finger opening that just holds the ball (toss.py grip --teach); unset:
     grip_torque_pct: int = 25               # close until the fingers stop on the ball, at this torque: a light hold
     grip_speed: int = 1500
@@ -39,7 +39,7 @@ class TossCfg:
                                                      [300.0, 560.0, 500.0]])   # gripper frame, looking down
     pick_look_z_mm: float = 330.0           # gripper frame height for the close look from straight above the ball
     pick_table_z_mm: float = -7.0           # armfarm05's table top: the ball's top read 37-41 mm in 3 picks (45 mm ball)
-    pick_ball_height_mm: float = 45.0       # the foam ball, when depth reads it flat
+    pick_ball_height_mm: float = 60.0       # its size for the pick (58 mm barely holds it: ~2 mm squeezed)
     gripper_frame_mm: float = 105.0         # gripper frame below the flange
     tcp_to_tip_mm: float = 55.0
     grip_depth_mm: float = 4.0              # the fingertips this far below the ball's middle: held at the tips, barely

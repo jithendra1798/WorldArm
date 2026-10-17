@@ -131,14 +131,16 @@ def test_ball_finder_places_a_dark_ball_from_colour_and_depth():
     cfg = TossCfg()
     intr = SimpleNamespace(focal_x_px=908.0, focal_y_px=907.0, center_x_px=640.0, center_y_px=360.0)
     cam_pos, cam_R = np.array([400.0, 300.0, 600.0]), np.diag([1.0, -1.0, -1.0])   # looking straight down
-    ball = np.array([430.0, 270.0, cfg.pick_table_z_mm + 22.5])                   # a 45 mm ball's centre
-    top = ball + [0.0, 0.0, 22.5]
+    r = cfg.pick_ball_height_mm / 2.0
+    ball = np.array([430.0, 270.0, cfg.pick_table_z_mm + r])                      # resting on the table
+    top = ball + [0.0, 0.0, r]
+    r_px = int(round(908.0 * r / (cam_pos[2] - ball[2])))                        # its size in the picture
     u = 640.0 + 908.0 * (top[0] - cam_pos[0]) / (cam_pos[2] - top[2])
     v = 360.0 + 907.0 * -(top[1] - cam_pos[1]) / (cam_pos[2] - top[2])
     bgr = np.full((720, 1280, 3), 200, np.uint8)
-    cv2.circle(bgr, (int(round(u)), int(round(v))), 40, (30, 30, 30), -1)
+    cv2.circle(bgr, (int(round(u)), int(round(v))), r_px, (30, 30, 30), -1)
     depth = np.full((720, 1280), cam_pos[2] - cfg.pick_table_z_mm, np.float32)    # the table, straight below
-    cv2.circle(depth, (int(round(u)), int(round(v))), 40, float(np.linalg.norm(top - cam_pos)), -1)
+    cv2.circle(depth, (int(round(u)), int(round(v))), r_px, float(np.linalg.norm(top - cam_pos)), -1)
     cv2.circle(bgr, (600, 715), 18, (30, 30, 30), -1)                           # a fingertip, cut off at the bottom edge
     cv2.circle(depth, (600, 715), 18, 300.0, -1)
     cv2.circle(bgr, (950, 650), 26, (30, 30, 30), -1)                           # far too small for a ball that close
@@ -148,8 +150,9 @@ def test_ball_finder_places_a_dark_ball_from_colour_and_depth():
     found = toss.detect_balls(bgr, depth, intr, cam_pos, cam_R, cfg)
     assert len(found) == 1                                                      # only the ball
     assert found[0]["x"] == pytest.approx(430.0, abs=4.0) and found[0]["y"] == pytest.approx(270.0, abs=4.0)
-    assert found[0]["height"] == pytest.approx(45.0, abs=6.0)
+    assert found[0]["height"] == pytest.approx(2 * r, abs=6.0)
     assert found[0]["table_z"] == pytest.approx(cfg.pick_table_z_mm, abs=1.0)   # the table measured around it
+    assert found[0]["cz"] == pytest.approx(cfg.pick_table_z_mm + r, abs=1.0)    # its middle: a radius above that
 
 
 def test_taught_throw_plan_keeps_every_limit_and_releases_near_peak_speed():

@@ -642,13 +642,15 @@ def detect_balls(bgr: np.ndarray, depth: np.ndarray, intr, cam_pos, cam_R, cfg: 
         height = top[2] - cfg.pick_table_z_mm
         if not -15 <= height <= 130:
             continue
+        table_z = _table_around(lab == i, depth, intr, cam_pos, cam_R)
+        if table_z is not None and abs(table_z - cfg.pick_table_z_mm) > 30.0:
+            table_z = None                                 # nothing believable around it
         if height < 8:                                     # soft foam reads nearly flat in depth: assume the size
             height = cfg.pick_ball_height_mm
-            cz = cfg.pick_table_z_mm + height / 2.0
-        else:                                              # the depth saw its top: the centre is a radius below,
-            cz = top[2] - cfg.pick_ball_height_mm / 2.0    # whatever the table's exact height
+        # it rests on the table: its middle is a radius above the table measured right around it (depth reads its
+        # top several mm low: the median takes in the ball's sides)
+        cz = (cfg.pick_table_z_mm if table_z is None else table_z) + cfg.pick_ball_height_mm / 2.0
         c = cam_pos + ray * ((cz - cam_pos[2]) / ray[2])
-        table_z = _table_around(lab == i, depth, intr, cam_pos, cam_R)
         found.append({"x": float(c[0]), "y": float(c[1]), "cz": float(cz), "height": float(height), "u": round(u),
                       "v": round(v), "area": area, "darkness": float(np.median(vals)), "table_z": table_z})
     return sorted(found, key=lambda b: b["darkness"])
