@@ -120,3 +120,26 @@ def test_calibration_recovers_speed_factor_release_delay_and_where_the_arms_stan
     assert cal.values["yaw_deg"] == pytest.approx(178.0, abs=0.7)
     one_speed = fit_constants(CHAIN, throws[:2], prior)     # the two throws at one target
     assert "can't be told apart" in one_speed.note
+
+
+def test_ball_finder_places_a_dark_ball_from_colour_and_depth():
+    """Waj's method: dark foam blob, depth to its top, centre on the plane half its height up."""
+    import cv2
+    from types import SimpleNamespace
+    import toss
+    from worldarm.toss.config import TossCfg
+    cfg = TossCfg()
+    intr = SimpleNamespace(focal_x_px=908.0, focal_y_px=907.0, center_x_px=640.0, center_y_px=360.0)
+    cam_pos, cam_R = np.array([400.0, 300.0, 600.0]), np.diag([1.0, -1.0, -1.0])   # looking straight down
+    ball = np.array([430.0, 270.0, cfg.pick_table_z_mm + 22.5])                   # a 45 mm ball's centre
+    top = ball + [0.0, 0.0, 22.5]
+    u = 640.0 + 908.0 * (top[0] - cam_pos[0]) / (cam_pos[2] - top[2])
+    v = 360.0 + 907.0 * -(top[1] - cam_pos[1]) / (cam_pos[2] - top[2])
+    bgr = np.full((720, 1280, 3), 200, np.uint8)
+    cv2.circle(bgr, (int(round(u)), int(round(v))), 40, (30, 30, 30), -1)
+    depth = np.zeros((720, 1280), np.float32)
+    cv2.circle(depth, (int(round(u)), int(round(v))), 40, float(np.linalg.norm(top - cam_pos)), -1)
+    found = toss.detect_balls(bgr, depth, intr, cam_pos, cam_R, cfg)
+    assert len(found) == 1
+    assert found[0]["x"] == pytest.approx(430.0, abs=4.0) and found[0]["y"] == pytest.approx(270.0, abs=4.0)
+    assert found[0]["height"] == pytest.approx(45.0, abs=6.0)

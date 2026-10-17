@@ -231,10 +231,10 @@ def test_throw_with_pick_finds_the_ball_picks_it_and_throws(cfg, monkeypatch):
     world = World(FakeArm(q=[0.0, 0.0, -60.0, 0.0, -60.0, 0.0]))
     looked = []
 
-    async def ball_on_table(machine, c, camera):
+    async def ball_on_table(machine, camera, c, chain, q, save=None):     # what the wrist camera reports
         looked.append(camera)
-        return np.array([400.0, 50.0, 25.0])
-    monkeypatch.setattr(toss, "find_ball", ball_on_table)
+        return [{"x": 400.0, "y": 300.0, "height": 45.0, "u": 640, "v": 360, "area": 3000, "darkness": 30.0}]
+    monkeypatch.setattr(toss, "wrist_look", ball_on_table)
     picker = lambda: toss.pick_ball(world.arm, world.gripper, None, chain, real, "cam", say=quiet)
     log = run(toss.throw(world.arm, world.gripper, None, TABLE, real, chain, manual=True, say=quiet, ask=lambda *_: "",
                          picker=picker))

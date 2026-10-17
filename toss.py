@@ -40,7 +40,7 @@ from worldarm.toss.config import TossCfg
 from worldarm.toss.kinematics import Chain, load_chain, solve_down
 from worldarm.toss.landing import ArmsFrame, resting_ball
 from worldarm.toss.profile import Trapezoid, fit_trapezoid
-from worldarm.toss.sweep import KeepOut, motion_problem
+from worldarm.toss.sweep import KeepOut, motion_problem, pose_problem
 from worldarm.toss.swing import (Forgiveness, ThrowPlan, choose_elevation, design_swing, end_pose, flight_mm,
                                  forgiveness, plan_throw, pose_at)
 from worldarm.toss.trigger import Recorder, release
@@ -505,81 +505,173 @@ async def dry(arm, chain: Chain, cfg: TossCfg, repeat: int = 3, scale: float = 1
     return res
 
 
-async def find_ball(machine, cfg: TossCfg, camera: str) -> np.ndarray | None:
-    """The ball's centre (mm, armfarm05's frame) seen by the wrist camera, gripper pointing down: task B's dark-ball
-    detector on the colour image (black rubber on the light table; the strip at the bottom where the fingertips
-    show is ignored), the ray from the camera through the ball's centre met with the plane the ball's centre lies in
-    (table + radius). Each look's picture goes to runs/ with what was found."""
+# ---- picking the ball up: Waj's armfarm05 method (throw/real_throw_armfarm05.py) on our kinematics -----------
+
+CAM_IN_FLANGE = np.array([83.0, -14.0, 18.0])            # the wrist camera's frame in the flange frame (machine config)
+
+
+def decode_depth(data: bytes) -> np.ndarray:
+    """Viam image/vnd.viam.dep -> (H, W) depth in mm."""
+    w, h = int.from_bytes(data[8:16], "big"), int.from_bytes(data[16:24], "big")
+    return np.frombuffer(data[24:], dtype=">u2").reshape(h, w).astype(np.float32)
+
+
+def detect_balls(bgr: np.ndarray, depth: np.ndarray, intr, cam_pos, cam_R, cfg: TossCfg) -> list[dict]:
+    """Dark round foam blobs on the table, armfarm05 world mm, darkest first (Waj's WorldArm method, OpenCV)."""
+    import cv2
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    sat, val = hsv[..., 1].astype(np.int16), hsv[..., 2].astype(np.int16)
+    mask = ((sat < 110) & (val < 100)).astype(np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)))
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(mask)
+    found = []
+    for i in range(1, n):
+        x0, y0, w, h, area = (int(v) for v in stats[i])
+        if not 400 <= area <= 25000 or max(h, w) / max(1, min(h, w)) > 1.8 or area / (h * w) < 0.5:
+            continue
+        region = lab[y0:y0 + h, x0:x0 + w] == i
+        vals = val[y0:y0 + h, x0:x0 + w][region].astype(np.float32)
+        if np.mean(vals < 70) < 0.3:
+            continue
+        ys, xs = np.nonzero(region)
+        weight = 255.0 - vals                              # aim at the dark foam, not highlights
+        u = x0 + float((weight * xs).sum() / weight.sum())
+        v = y0 + float((weight * ys).sum() / weight.sum())
+        d = depth[y0:y0 + h, x0:x0 + w][region]
+        d = d[d > 0]
+        if d.size < 5:
+            continue
+        ray = cam_R @ np.array([(u - intr.center_x_px) / intr.focal_x_px, (v - intr.center_y_px) / intr.focal_y_px, 1.0])
+        if ray[2] > -0.1:
+            continue
+        top = cam_pos + ray * float(np.median(d))
+        height = top[2] - cfg.pick_table_z_mm
+        if not -15 <= height <= 130:
+            continue
+        if height < 8:                                     # soft foam reads nearly flat in depth
+            height = cfg.pick_ball_height_mm
+        cz = cfg.pick_table_z_mm + height / 2.0
+        c = cam_pos + ray * ((cz - cam_pos[2]) / ray[2])
+        found.append({"x": float(c[0]), "y": float(c[1]), "height": float(height), "u": round(u), "v": round(v),
+                      "area": area, "darkness": float(np.median(vals))})
+    return sorted(found, key=lambda b: b["darkness"])
+
+
+async def wrist_look(machine, camera: str, cfg: TossCfg, chain: Chain, q, save: Path | None = None) -> list[dict]:
+    """Balls the wrist camera sees from joints q (colour + aligned depth); the picture is saved with them marked."""
     import cv2
     from viam.components.camera import Camera
-    from viam.proto.common import Pose, PoseInFrame
-    from worldarm.ball.detect import find_balls
     from worldarm.cell.geometry import rot_from_ov
     from worldarm.perception import decode_color
-
     cam = Camera.from_robot(machine, camera)
-    images, _ = await cam.get_images(filter_source_names=["color"])
-    img = decode_color(images[0].data) if images else None
-    if img is None:
-        return None
-    h, w = img.shape[:2]
-    search = np.array([[0, 0], [w, 0], [w, h - cfg.pick_fingers_px], [0, h - cfg.pick_fingers_px]])
-    found = find_balls(img, tuple(cfg.pick_radius_px), search)
-    out = run_dir("pick")
-    view = img.copy()
-    cv2.polylines(view, [search.astype(np.int32)], True, (0, 200, 0), 2)
-    for b in found:
-        cv2.circle(view, (int(b.u), int(b.v)), int(b.radius_px), (0, 0, 255), 3)
-    cv2.imwrite(str(out / f"view-{time.strftime('%H%M%S')}.jpg"), view)
-    if not found:
-        return None
-    b = found[0]                                            # the roundest
-    ip = (await cam.get_properties()).intrinsic_parameters
-    c = (await machine.transform_pose(PoseInFrame(reference_frame=camera, pose=Pose(o_z=1.0)), "world")).pose
-    R = rot_from_ov(c.o_x, c.o_y, c.o_z, c.theta)          # camera axes in the world: x right, y down, z out
-    ray = R @ np.array([(b.u - ip.center_x_px) / ip.focal_x_px, (b.v - ip.center_y_px) / ip.focal_y_px, 1.0])
-    if ray[2] > -0.2:
-        return None                                        # not looking down at the table
-    z_ball = cfg.table_z_mm + cfg.ball_diameter_mm / 2.0
-    t = (z_ball - c.z) / ray[2]
-    return np.array([c.x, c.y, c.z]) + t * ray
+    images, _ = await cam.get_images()
+    by = {im.name: im for im in images}
+    if "color" not in by or "depth" not in by:
+        raise SystemExit("armfarm05's wrist camera must return 'color' and 'depth'")
+    bgr, depth = decode_color(by["color"].data), decode_depth(by["depth"].data)
+    intr = (await cam.get_properties()).intrinsic_parameters
+    M, _ = chain.frames(q)                                 # camera pose from our model (matches the arm to 0.0 mm)
+    cam_pos = (M @ np.r_[CAM_IN_FLANGE, 1.0])[:3]
+    cam_R = M[:3, :3] @ rot_from_ov(-0.030391, -0.003538, 0.999532, -97.731173)
+    balls = detect_balls(bgr, depth, intr, cam_pos, cam_R, cfg)
+    if save is not None:
+        for b in balls:
+            cv2.circle(bgr, (b["u"], b["v"]), 25, (0, 0, 255), 3)
+        cv2.imwrite(str(save), bgr)
+    return balls
+
+
+def reachable(x: float, y: float) -> bool:
+    return 150 <= math.hypot(x, y) <= 720 and x <= 640 and y >= -400
+
+
+async def line_to(arm, chain: Chain, cfg: TossCfg, gripper_xyz, keep: KeepOut, label: str, step_mm: float = 20.0) -> None:
+    """The gripper frame straight to gripper_xyz, pointing down: IK every step_mm, each pose checked, then moved
+    through slowly (a straight line near the ball; a joint move would curve)."""
+    from viam.proto.component.arm import JointPositions
+    tool = (0.0, 0.0, cfg.gripper_frame_mm)
+    q = np.asarray(await joints_of(arm), float)
+    M, _ = chain.frames(q)
+    p0, p1 = (M @ np.r_[tool, 1.0])[:3], np.asarray(gripper_xyz, float)
+    if M[2, 2] > -0.99:                                    # not pointing down yet: turn it down from where it is
+        q1 = solve_down(chain, p1, q, tool)
+        if q1 is None:
+            raise SystemExit(f"{label}: no way to point the gripper down at {np.round(p1).tolist()}")
+        await go_slowly(arm, chain, cfg, q1, keep=keep)
+        return
+    path = []
+    for i in range(1, max(1, int(math.ceil(np.linalg.norm(p1 - p0) / step_mm))) + 1):
+        pt = p0 + (p1 - p0) * i / max(1, int(math.ceil(np.linalg.norm(p1 - p0) / step_mm)))
+        qi = solve_down(chain, pt, q, tool)
+        if qi is None or float(np.max(np.abs(qi - q))) > 12.0:
+            raise SystemExit(f"{label}: the straight path breaks near {np.round(pt).tolist()}")
+        why = pose_problem(chain, qi, tuple(cfg.tool_mm), keep)
+        if why:
+            raise SystemExit(f"{label}: {why} near {np.round(pt).tolist()}")
+        path.append(qi)
+        q = qi
+    await arm.do_command({"set_speed": float(cfg.windup_speed_deg_s)})
+    for qi in path:
+        await arm.move_to_joint_positions(JointPositions(values=[float(v) for v in qi]))
 
 
 async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: str = "cam", say=print) -> bool:
-    """Look down from the look pose, find the ball, look again from closer, then down over it, close to the
-    taught grip, lift. Every move slow and checked along its whole path. True if the fingers stopped on the ball."""
-    z_ball = cfg.table_z_mm + cfg.ball_diameter_mm / 2.0
+    """Find the ball from the scan poses, look again from straight above it, go down and close on it (67% of the
+    travel), lift. True if the fingers stopped on the ball."""
     reaching = dataclasses.replace(KeepOut.of(cfg), reach_mm=300.0)    # reaching down near the base folds it more
     near_table = dataclasses.replace(reaching, clearance_mm=cfg.pick_clearance_mm)
-
-    async def to(xyz, label: str, keep: KeepOut | None = None) -> None:
-        q = solve_down(chain, xyz, await joints_of(arm), cfg.tool_mm)
-        if q is None:
-            raise SystemExit(f"Can't reach {label} at ({xyz[0]:.0f}, {xyz[1]:.0f}, {xyz[2]:.0f}) mm with the gripper down")
-        await go_slowly(arm, chain, cfg, q, say, keep=keep or reaching)
-
+    tool = (0.0, 0.0, cfg.gripper_frame_mm)
+    out = run_dir("pick")
+    close_pos = round(cfg.full_open_counts * (1 - cfg.close_pct / 100.0))
     try:
-        await set_mm(gripper, cfg, cfg.ball_diameter_mm + 25.0)
-        await to(cfg.pick_look_mm, "the look pose")
-        await asyncio.sleep(0.5)
-        ball = await find_ball(machine, cfg, camera)
-        if ball is None:
-            say("no ball on the table in view: put it in front of armfarm05, about 40 cm out")
+        await gripper.do_command({"set": float(cfg.full_open_counts)})
+        est = None
+        for i, pose in enumerate(cfg.pick_scan):
+            q = solve_down(chain, pose, await joints_of(arm), tool)
+            if q is None:
+                continue
+            await go_slowly(arm, chain, cfg, q, say, keep=reaching)
+            balls = [b for b in await wrist_look(machine, camera, cfg, chain, await joints_of(arm), out / f"scan{i + 1}.jpg")
+                     if reachable(b["x"], b["y"])]
+            say(f"scan {i + 1}: {len(balls)} ball(s)")
+            if balls:
+                est = balls[0]
+                break
+        if est is None:
+            say(f"no ball seen from any scan pose (pictures in {out})")
             return False
-        say(f"ball seen at ({ball[0]:.0f}, {ball[1]:.0f}, {ball[2]:.0f}) mm")
-        await to((ball[0], ball[1], z_ball + 180.0), "above the ball")
-        await asyncio.sleep(0.4)
-        again = await find_ball(machine, cfg, camera)       # from closer: a better fix
-        if again is not None and float(np.linalg.norm(again[:2] - ball[:2])) < 80.0:
-            ball = again
-        await to((ball[0], ball[1], z_ball + 60.0), "just above the ball", near_table)
-        await to((ball[0], ball[1], z_ball), "down to the ball", near_table)
-        width = await grip_ball(gripper, cfg)
-        await to((ball[0], ball[1], z_ball + 150.0), "up with the ball", near_table)
+        q = await joints_of(arm)
+        M, _ = chain.frames(q)
+        off = M[:3, :3] @ (CAM_IN_FLANGE - np.array([0.0, 0.0, cfg.gripper_frame_mm]))   # camera minus gripper frame
+        above = np.array([est["x"] - off[0], est["y"] - off[1], cfg.pick_look_z_mm])
+        if reachable(above[0], above[1]):
+            await line_to(arm, chain, cfg, above, reaching, "look above the ball")
+            near = [b for b in await wrist_look(machine, camera, cfg, chain, await joints_of(arm), out / "look.jpg")
+                    if math.hypot(b["x"] - est["x"], b["y"] - est["y"]) < 80]
+            if near:
+                est = min(near, key=lambda b: math.hypot(b["x"] - est["x"], b["y"] - est["y"]))
+        say(f"ball at ({est['x']:.0f}, {est['y']:.0f}), {est['height']:.0f} mm tall")
+        cz = cfg.pick_table_z_mm + est["height"] / 2.0
+        gz = max(cz - cfg.grasp_lower_mm + cfg.grasp_raise_mm + cfg.tcp_to_tip_mm,
+                 cfg.pick_table_z_mm + cfg.min_tcp_above_table_mm)
+        hover = max(cfg.pick_hover_mm, est["height"] + 40.0)
+        await line_to(arm, chain, cfg, (est["x"], est["y"], gz + hover), reaching, "above the ball")
+        await line_to(arm, chain, cfg, (est["x"], est["y"], gz), near_table, "down to the ball")
+        await gripper.do_command({"set": float(close_pos)})
+        await asyncio.sleep(0.6)
+        pos = (await gripper.do_command({"get": True})).get("pos")
+        try:
+            held = bool((await gripper.is_holding_something()).is_holding_something)
+        except Exception:
+            held = False
+        held = held or (pos is not None and float(pos) > close_pos + 50)   # stopped >5 mm short: the ball is there
+        await line_to(arm, chain, cfg, (est["x"], est["y"], max(gz + 150.0, 320.0)), near_table, "lift")
     finally:
         await safe_stop(arm)
-    held = holding(width, cfg)
-    say(f"fingers at {width if width is None else round(width)} mm: {'holding the ball' if held else 'NO ball in the gripper'}")
+    say(f"grip at {pos} (told {close_pos}): {'holding the ball' if held else 'NO ball in the gripper'}")
+    if not held:
+        await gripper.do_command({"set": float(cfg.full_open_counts)})
     return held
 
 

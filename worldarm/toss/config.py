@@ -33,10 +33,20 @@ class TossCfg:
     release_mm: float = 84.0                # opening on release: fully open, the fingers clear the ball fastest
     max_open_mm: float = 84.0               # xArm gripper: 850 counts at 84 mm (chapter 1's GripperCfg)
     full_open_counts: float = 850.0
-    # picking the ball up (toss.py pick, throw --pick): armfarm05's wrist camera and its ball segmenter
-    pick_radius_px: tuple = (20.0, 140.0)    # the ball's size in the wrist camera, ~25-50 cm away (fx ~908)
-    pick_fingers_px: int = 110              # the bottom strip of the image where the fingertips show: not searched
-    pick_look_mm: tuple = (380.0, 0.0, 325.0)   # the ball point while the camera looks down for it (camera ~45 cm up)
+    # picking the ball up (toss.py pick, throw --pick), Waj's armfarm05 method (throw/real_throw_armfarm05.py):
+    # wrist-camera scan from four poses over the table on the arm's left, dark foam + depth, close look from above
+    pick_scan: list = field(default_factory=lambda: [[487.7, 495.1, 499.7], [330.0, 330.0, 500.0], [480.0, 220.0, 500.0],
+                                                     [300.0, 560.0, 500.0]])   # gripper frame, looking down
+    pick_look_z_mm: float = 330.0           # gripper frame height for the close look from straight above the ball
+    pick_table_z_mm: float = -23.0          # armfarm05's table top (Waj's measured geometry)
+    pick_ball_height_mm: float = 45.0       # the foam ball, when depth reads it flat
+    gripper_frame_mm: float = 105.0         # gripper frame below the flange
+    tcp_to_tip_mm: float = 55.0
+    grasp_lower_mm: float = 6.0
+    grasp_raise_mm: float = 10.0            # Waj: grip 10 mm higher than WorldArm's height
+    min_tcp_above_table_mm: float = 55.0
+    pick_hover_mm: float = 100.0
+    close_pct: float = 67.0                 # close the fingers to this share of their travel on the ball (foam squeezes)
     pick_clearance_mm: float = 5.0          # table clearance for the last few cm down to the ball
     # the swing: start pose and directions from `plan --design` (or edited by hand)
     start_deg: list | None = None           # wind-up pose, all joints
