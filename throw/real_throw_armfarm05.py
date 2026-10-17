@@ -24,8 +24,8 @@ system. Pick moves therefore use local uf850 IK (URDF FK matches armfarm05's
 GetEndPosition to ~1e-5 mm) along straight-line joint waypoints, with a table
 floor check on every waypoint. Reorienting moves are only allowed high up.
 
-Throw: one smooth streamed trajectory start -> second -> last (no stop at
-second), time-scaled so the tool stays under --tcp-limit (the xArm faults
+Throw: one smooth streamed trajectory start -> last (operator swing, no stops,
+time-scaled so the tool stays under --tcp-limit (the xArm faults
 with "Linear speed exceeds limit in ServoJ mode" above ~1 m/s). The gripper
 opens at peak ball speed while the arm is still moving, triggered from the
 driver's per-setpoint acknowledgements; if the motion ends first it stays
@@ -75,9 +75,9 @@ WRIST_CAM = "cam"
 
 # Viam Control-page samples on armfarm05 (degrees).
 POSES = {
-    "start": [4.33, -27.34, -29.06, 77.01, -29.26, -165.54],
-    "second": [39.60, -27.35, -44.68, 122.56, -41.74, -158.10],
-    "last": [53.96, -27.35, -78.44, 122.15, -52.40, -148.37],
+    # Operator Control-page samples on armfarm05, 2026-10-17: low, jaws down -> high, jaws forward.
+    "start": [24.16, -27.39, -29.82, 91.81, -10.51, -148.52],
+    "last": [62.59, -27.39, -108.75, 110.31, -37.57, -115.78],
 }
 GRASP_OV = (0.0, 0.0, -1.0, 0.0)  # WorldArm VIAM_GRASP_O*/THETA: jaws straight down, fixed wrist
 # Gripper-frame scan positions (mm), looking down. First is WorldArm's saved view pose.
@@ -558,14 +558,14 @@ async def calibrate_overview(mover, gripper, ocam, ball, close_pos):
 
 # ------------------------------------------------------------------ throw
 def plan_throw(kin, q_start, joint_speed, joint_accel, tcp_limit, release_shift=0.0, dt=0.01):
-    """One smooth joint spline start -> second -> last (no stop at second).
+    """One smooth joint spline start -> last (rest to rest, no intermediate stop).
 
     Uniformly time-scaled so joint speed, joint acceleration and the tool speed
     (flange and a point 175 mm out, covering any controller TCP) stay under
     the limits; the xArm faults with "Linear speed exceeds limit in ServoJ
     mode" above its TCP ceiling. Release is at peak ball speed.
     """
-    Q = np.array([q_start, POSES["second"], POSES["last"]], float)
+    Q = np.array([q_start, POSES["last"]], float)
     seg = np.max(np.abs(np.diff(Q, axis=0)), axis=1)
     knots = np.concatenate([[0.0], np.cumsum(seg)]) / 100.0
     point = lambda q, d: (lambda f: f[0] + d * f[1][:, 2])(kin.flange(q))
@@ -592,14 +592,14 @@ def plan_throw(kin, q_start, joint_speed, joint_accel, tcp_limit, release_shift=
 def plan_flick(kin, q_start, tcp_limit, base_s=0.6, dt=0.01):
     """Wrist-flick variant: J5 winds back during the approach, then snaps at the
     full 180 deg/s (1145 deg/s^2 bang-bang) into the last pose. The other joints
-    follow the smooth start -> second -> last spline over base_s, slowed if the
+    follow the smooth start -> last spline over base_s, slowed if the
     flange would exceed tcp_limit. Only the flange is held under the cap: the
     gripper tip reaches ~1.5 m/s, which the controller accepts only if its TCP
     offset is the flange. Release is at peak wrist speed.
     """
     J, sign = 4, -1.0  # J5, snapping toward negative angles
     tf = MAX_SPEED / MAX_ACCEL
-    Q = np.array([q_start, POSES["second"], POSES["last"]], float)
+    Q = np.array([q_start, POSES["last"]], float)
     end = POSES["last"][J]
     wind = end - sign * MAX_SPEED * tf
     seg = np.max(np.abs(np.diff(Q, axis=0)), axis=1)
@@ -719,10 +719,11 @@ async def main():
     ap.add_argument("--calibrate-overview", action="store_true",
                     help="after the pick, teach the overview camera (six automatic place/pick cycles)")
     ap.add_argument("--close-pct", type=float, default=67.0, help="gripper close, percent of travel")
-    ap.add_argument("--jaw-s", type=float, default=0.03, help="assumed jaw-opening time (s)")
+    ap.add_argument("--jaw-s", type=float, default=0.15,
+                    help="send the open this many seconds before the release point (gripper/command delay)")
     ap.add_argument("--flick", action="store_true",
                     help="wrist-flick throw: J5 snaps at 180 deg/s; flange held under --tcp-limit")
-    ap.add_argument("--release-shift", type=float, default=-0.2,
+    ap.add_argument("--release-shift", type=float, default=0.0,
                     help="seconds to move the release relative to peak ball speed (negative = sooner)")
     ap.add_argument("--tcp-limit", type=float, default=1000.0,
                     help="tool speed ceiling, mm/s (xArm ServoJ faults above ~1000)")
@@ -820,7 +821,7 @@ async def main():
         if args.calibrate_overview:
             calib = await calibrate_overview(mover, gripper, ocam, ball, close_pos) or calib
 
-        # 3. Throw: one smooth streamed motion start -> second -> last, release mid-motion.
+        # 3. Throw: one smooth streamed motion start -> last, release mid-motion.
         await move_joints(arm, "start")
         if args.flick:
             plan = plan_flick(kin, await joints(arm), args.tcp_limit)
