@@ -248,10 +248,18 @@ def holding(width: float | None, cfg: TossCfg) -> bool:
     return width > (cfg.hold_mm + 1.0 if cfg.hold_mm is not None else 0.4 * cfg.ball_diameter_mm)
 
 
+def release_counts(cfg: TossCfg) -> float:
+    """How far the fingers open to let go: just past the ball (less travel than fully open: the ball is free sooner)."""
+    return cfg.counts(min(cfg.max_open_mm, cfg.pick_ball_height_mm + cfg.free_mm))
+
+
 async def open_fast(gripper, cfg: TossCfg) -> None:
-    """Let go: fully open at the gripper's top speed (grab_with_torque takes a speed; "set" moves at its default)."""
-    await gripper.do_command({"grab_with_torque": {"position": int(cfg.counts(cfg.release_mm)),
-                                                   "speed": int(cfg.release_speed), "torque": 100}})
+    """Let go: at the gripper's top speed, just past the ball."""
+    try:
+        await gripper.do_command({"set_gripper_speed": int(cfg.release_speed)})
+    except Exception:
+        pass
+    await gripper.do_command({"set": float(release_counts(cfg))})
 
 
 async def width_mm(gripper, cfg: TossCfg) -> float | None:
@@ -415,14 +423,16 @@ async def grip(gripper, cfg: TossCfg, teach: bool = False, repeat: int = 0, out:
         res["hold_mm"] = mm
     if repeat:
         lat, acks = [], []
+        close_pos = round(cfg.full_open_counts * (1 - cfg.close_pct / 100.0))
+        free_at = cfg.pick_ball_height_mm + 3.0              # the fingers are clear of the ball here
         for _ in range(repeat):
-            await grip_ball(gripper, cfg)                   # as the throw holds it (taught, or closed gently on it)
-            w0 = await width_mm(gripper, cfg)
+            await gripper.do_command({"set": float(close_pos)})  # as the pick closes on the ball
+            await asyncio.sleep(SETTLE_S)
             t_send = clock()
             opening = asyncio.ensure_future(open_fast(gripper, cfg))
             while clock() - t_send < 2.0:
                 w = await width_mm(gripper, cfg)
-                if w is not None and w0 is not None and w - w0 > 2.0:
+                if w is not None and w >= free_at:
                     lat.append(clock() - t_send)
                     break
             await opening
@@ -431,9 +441,10 @@ async def grip(gripper, cfg: TossCfg, teach: bool = False, repeat: int = 0, out:
             raise SystemExit("The fingers never moved after the open command (or the gripper can't be read)")
         res.update({"open_latency_s": lat, "median_s": statistics.median(lat),
                     "sd_s": statistics.stdev(lat) if len(lat) > 1 else 0.0, "command_returned_s": acks})
-        say(f"open -> fingers 2 mm apart: median {res['median_s'] * 1000:.0f} ms, sd {res['sd_s'] * 1000:.0f} ms "
+        say(f"open -> fingers clear of the ball: median {res['median_s'] * 1000:.0f} ms, sd {res['sd_s'] * 1000:.0f} ms "
             f"(over {len(lat)}); the command itself returned after {statistics.median(acks) * 1000:.0f} ms")
-        say(f"release_delay_s is {cfg.release_delay_s:.3f}; calibrate measures the real one from throws")
+        cfg.jaw_s = round(res["median_s"], 3)
+        say(f"the throw now sends the open command {cfg.jaw_s * 1000:.0f} ms early; saved: {cfg.save()}")
         await set_mm(gripper, cfg, cfg.ball_diameter_mm + 15.0)
     write_json(run_dir("grip", out) / "grip.json", res)
     return res
@@ -784,7 +795,7 @@ async def throw(arm, gripper, overhead, table, cfg: TossCfg, chain: Chain, repea
 
 
 async def throw_taught(arm, gripper, cfg: TossCfg, chain: Chain, connect, picker=None, repeat: int = 1,
-                       tcp_limit: float = 1000.0, release_shift_s: float = -0.2, jaw_s: float = 0.03, out: Path | None = None,
+                       tcp_limit: float = 1000.0, release_shift_s: float = 0.0, jaw_s: float | None = None, out: Path | None = None,
                        say=print, ask=None) -> list[dict]:
     """Waj's throw (worldarm/toss/taught.py): pick (optional), the taught start pose, then one smooth streamed
     spline start -> second -> last under the arm's tool-speed cap, the gripper opened near peak ball speed from its
@@ -815,7 +826,8 @@ async def throw_taught(arm, gripper, cfg: TossCfg, chain: Chain, connect, picker
                 await gripper.do_command({"set_gripper_speed": int(cfg.release_speed)})
             except Exception:
                 pass
-            releaser = taught.Releaser(connect, "gripper", plan["release_t"] - jaw_s)
+            lead = cfg.jaw_s if jaw_s is None else jaw_s
+            releaser = taught.Releaser(connect, "gripper", plan["release_t"] - lead, release_counts(cfg), cfg.release_speed)
             releaser.start()
             if not await asyncio.to_thread(releaser.ready.wait, 20.0) or "error" in releaser.result:
                 releaser.cancel()
@@ -925,7 +937,7 @@ def parser() -> argparse.ArgumentParser:
             s.add_argument("--swing", action="store_true", help="our planned swing instead of Waj's taught throw")
             s.add_argument("--measure", action="store_true", help="type where each throw landed")
             s.add_argument("--tcp-limit", type=float, default=1000.0, help="tool speed cap (mm/s)")
-            s.add_argument("--release-shift", type=float, default=-0.2, help="release this long after peak speed (s)")
+            s.add_argument("--release-shift", type=float, default=0.0, help="release this long after peak speed (s)")
             s.add_argument("--taught", action="store_true", help=argparse.SUPPRESS)       # the default now
         if name in ("throw", "catch"):
             s.add_argument("--manual", action="store_true", help="measure the landing by hand, not with the camera")

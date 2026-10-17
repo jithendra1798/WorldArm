@@ -103,9 +103,10 @@ class Releaser(threading.Thread):
     """Opens the gripper on its own thread, event loop and Viam connection, `delay` s after the stream starts
     (fire_from), on a wall-clock timer. cancel() before then keeps the gripper closed."""
 
-    def __init__(self, connect, gripper_name: str, delay: float):
+    def __init__(self, connect, gripper_name: str, delay: float, open_counts: float = 850.0, speed: int = 5000):
         super().__init__(daemon=True)
         self.connect, self.gripper_name, self.delay = connect, gripper_name, delay
+        self.open_counts, self.speed = open_counts, speed
         self.ready, self.armed, self.cancelled = threading.Event(), threading.Event(), threading.Event()
         self.t_start = None
         self.result: dict = {}
@@ -128,6 +129,10 @@ class Releaser(threading.Thread):
             machine = await self.connect()
             gripper = Gripper.from_robot(machine, self.gripper_name)
             await gripper.do_command({"get": True})                 # warm the connection
+            try:
+                await gripper.do_command({"set_gripper_speed": int(self.speed)})   # its top speed for the release
+            except Exception:
+                pass
             self.ready.set()
             await asyncio.to_thread(self.armed.wait)
             if self.cancelled.is_set():
@@ -136,7 +141,7 @@ class Releaser(threading.Thread):
             if self.cancelled.is_set():
                 return
             self.result["sent_s"] = round(time.monotonic() - self.t_start, 3)
-            await gripper.open()
+            await gripper.do_command({"set": float(self.open_counts)})   # just past the ball: free soonest
             self.result["open_returned_s"] = round(time.monotonic() - self.t_start, 3)
         except Exception as exc:                                     # reported, never raised into the throw
             self.result["error"] = f"{type(exc).__name__}: {exc}"

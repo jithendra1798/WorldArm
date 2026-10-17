@@ -46,7 +46,9 @@ class TossCfg:
     grasp_raise_mm: float = 10.0            # Waj: grip 10 mm higher than WorldArm's height
     min_tcp_above_table_mm: float = 55.0
     pick_hover_mm: float = 100.0
-    close_pct: float = 67.0                 # close the fingers to this share of their travel on the ball (foam squeezes)
+    close_pct: float = 52.0                 # close the fingers to this share of their travel: ~40 mm on the 45 mm foam ball
+    free_mm: float = 20.0                   # on release, open only this far past the ball (less travel: free sooner)
+    jaw_s: float = 0.10                     # open command -> ball free (toss.py grip --repeat measures it)
     pick_clearance_mm: float = 5.0          # table clearance for the last few cm down to the ball
     pick_fingers_px: int = 110              # the bottom strip of the wrist image where the fingertips show
     # the swing: start pose and directions from `plan --design` (or edited by hand)

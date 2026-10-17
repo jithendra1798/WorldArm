@@ -92,10 +92,12 @@ def test_dry_swings_measure_the_start_delay_speed_and_acceleration(cfg):
 
 def test_grip_teach_finds_the_opening_that_holds_and_measures_the_open_delay(cfg):
     world = World(FakeArm())
+    cfg.pick_ball_height_mm = 50.0                                           # the fake ball's size
     answers = iter(["", "", "", "y"])                                        # holds at 2 mm under ball + 2
     res = run(toss.grip(world.gripper, cfg, teach=True, repeat=5, say=quiet, ask=lambda *_: next(answers)))
     assert res["hold_mm"] == 50.0 and TossCfg.load().hold_mm == 50.0
-    assert 0.04 < res["median_s"] < 0.09                                     # 10 ms there + 30 ms + 2 mm of opening
+    assert 0.04 < res["median_s"] < 0.09                                     # 10 ms there + 30 ms + 3 mm of opening
+    assert TossCfg.load().jaw_s == pytest.approx(res["median_s"], abs=1e-3)  # the throw's lead, saved
 
 
 @pytest.mark.parametrize("trigger", ["predict", "timed"])
