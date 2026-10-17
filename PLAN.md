@@ -156,6 +156,40 @@ camera also judges each roll: blocked, goal, or short. Commands that move ask "t
 The simulation behind the H4 and H5 slides runs with no robot: `caffeinate -i .venv/bin/python ball_study.py`
 (~50 min, one process), then the charts: `/opt/homebrew/bin/python3.14 ball_study.py --report-only runs/<stamp>-ball-study`.
 
+**Rung C, piece by piece** (`toss.py`; settings in `config/toss.json`, logs in `runs/`). armfarm05 throws, the
+overhead camera on armfarm03 finds where the ball came to rest, then armfarm03 holds the bowl at the predicted
+landing. Physics, no learning: the arm's own kinematics and the ball's flight predict the landing; three
+calibrated constants (speed factor, release delay, where the arms stand) make it match.
+
+**Set up (physical):**
+- Tape-measure where armfarm05's base is in armfarm03's frame (x ahead of armfarm03's base, y to its left) and
+  which way armfarm05 faces: `thrower_in_catcher` in `config/toss.json`. `calibrate` refines it.
+- Put any wall, rail or screen near armfarm05 in `walls` (boxes in armfarm05's frame, mm) and set
+  `ceiling_z_mm`. Every move is checked against them and the table along its whole path; direct joint moves
+  ignore Viam's obstacles.
+- A cloth where the ball lands, so it stops there, inside the overhead camera's view (or `--manual`: a tape
+  measure from the target mark). Nobody in the throw path; someone at armfarm05's E-stop.
+
+| # | Command | Tests | Pass when |
+|---|---|---|---|
+| 1 | `python toss.py probe` | joints, the arm's own kinematics (saved), our model vs. the arm, which settings it takes (no motion) | model within 2 mm and 1° |
+| 2 | `python toss.py plan --design --distance 500` | offline: searches a wind-up pose and swing; joint speed, release point, margins, how forgiving | a plan |
+| 3 | `python toss.py windup --distance 500` | the slow move to the wind-up pose | the fingers close across the swing (left-right); if not, turn the last joint 90° in `start_deg` and re-plan |
+| 4 | `python toss.py dry --scale 0.5 --distance 500`, then `--repeat 3` | the swing with no ball: real start delay, speed, acceleration, jitter | speed within 1%, acceleration as set |
+| 5 | `python toss.py grip --teach`, then `grip --repeat 10` | the opening that just holds the ball; how long "open" takes | holds; delay steady |
+| 6 | `python toss.py throw --repeat 5 --distance 500` | grip, swing, let go; the camera finds where it landed | the landings bunch within a few cm (the offset from the plan is what step 8 fixes) |
+| 7 | `python toss.py report` | per setting: spread, 95% radius, offset from the plan, release timing | spread under the bowl's radius |
+| 8 | throws at a second distance and base angle, then `python toss.py calibrate` | speed factor, release delay, where the arms stand | residuals about the spread |
+| 9 | `python toss.py catch --teach`, `catch --dry`, then `catch` | armfarm03 puts the bowl where the throw will land; the throw | caught |
+
+The release isn't fixed at 45°: the planner picks the angle (25-60°) where a late release lands in the same
+place (released later, the ball leaves further along the swing but heading differently, and the two cancel),
+and prints how far the landing moves for 10 ms late, 1% faster, 1° higher. `trigger` in the config is
+`predict` (from joint readings during the swing) or `timed` (from the start delay `dry` measured); `dry`
+prints which is steadier. If the release timing still varies more than ~15 ms (`report`), the fix is a trigger
+on the robot itself (Viam Control Code, as `catch-thrown-object-module/` was deployed); not built. Speeds:
+0.8 m needs roughly 110-130°/s, above the 15°/s cap in Rules: get the staff OK.
+
 ## What we claim, and how we'll show it
 
 | | Hypothesis | Measured by |

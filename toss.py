@@ -1,0 +1,719 @@
+"""Chapter 2, rung C: armfarm05 throws the ball, armfarm03 catches it in a bowl. One drill per piece.
+
+Physics, no learning: the arm's own kinematics and the ball's flight say where a throw lands; three calibrated
+constants (speed factor, release delay, where the arms stand) make it match. First prove the throw repeatable
+at one setting, then calibrate, then catch. Start near (--distance 500) and work out.
+
+  python toss.py probe                  no motion: joints, the arm's own kinematics, our model checked against it
+  python toss.py plan --design          offline: search a wind-up pose and swing for the target (saved)
+  python toss.py plan                   offline: the throw: joint speed, release point, margins, how forgiving
+  python toss.py windup                 MOVES armfarm05 slowly to the wind-up pose
+  python toss.py dry --repeat 3         MOVES: the swing with no ball; its real start delay, speed and timing
+  python toss.py grip --teach           gripper only: the finger opening that just holds the ball
+  python toss.py grip --repeat 10       gripper only: how long "open" takes to move the fingers
+  python toss.py throw --repeat 5       MOVES: grip, swing, let go; the overhead camera finds where it landed
+  python toss.py report                 offline: how repeatable the throws are, against the plan
+  python toss.py calibrate              offline: speed factor, release delay, the arms' frames, from the throws
+  python toss.py catch --teach          no motion: armfarm03 holding the bowl with the ball in it: how it holds it
+  python toss.py catch [--dry]          MOVES BOTH: armfarm03 holds the bowl where the throw will land; the throw
+
+Settings: config/toss.json; logs: runs/<stamp>-toss-<drill>/. Commands that move ask "type go" (--yes skips
+it); Ctrl-C or any error stops the arm. Direct joint moves ignore Viam's obstacles: every move is checked
+against the table, ceiling and walls in config/toss.json first, along its whole path.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import math
+import statistics
+import time
+from pathlib import Path
+
+import numpy as np
+
+from worldarm.toss.calibrate import PARAMS, fit_constants
+from worldarm.toss.config import TossCfg
+from worldarm.toss.kinematics import Chain, load_chain
+from worldarm.toss.landing import ArmsFrame, resting_ball
+from worldarm.toss.profile import Trapezoid, fit_trapezoid
+from worldarm.toss.sweep import KeepOut, motion_problem
+from worldarm.toss.swing import (Forgiveness, ThrowPlan, choose_elevation, design_swing, end_pose, forgiveness,
+                                 plan_throw, pose_at)
+from worldarm.toss.trigger import Recorder, release
+
+RUNS = Path("runs")
+SETTLE_S = 0.5               # after a gripper move
+MOVES = {"windup": "armfarm05 to the wind-up pose (slowly)", "dry": "armfarm05 swings, no ball",
+         "throw": "armfarm05 swings and throws the ball", "catch": "armfarm03 moves the bowl, then armfarm05 throws"}
+
+
+def now() -> float:
+    return asyncio.get_running_loop().time()
+
+
+def _jsonable(o):
+    if isinstance(o, np.ndarray):
+        return o.tolist()
+    if isinstance(o, np.generic):
+        return o.item()
+    raise TypeError(type(o))
+
+
+def write_json(path: Path, obj) -> None:
+    path.write_text(json.dumps(obj, indent=2, default=_jsonable) + "\n")
+
+
+def run_dir(kind: str, out: Path | None = None) -> Path:
+    out = Path(out) if out else RUNS / f"{time.strftime('%Y%m%d-%H%M%S')}-toss-{kind}"
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+def chain_of(cfg: TossCfg) -> Chain:
+    if not Path(cfg.kinematics).exists():
+        raise SystemExit("No kinematics yet: python toss.py probe (reads the arm's own model)")
+    return load_chain(cfg.kinematics)
+
+
+# ---- the plan ---------------------------------------------------------------------------------------------
+
+def throw_plan(cfg: TossCfg, chain: Chain, target=None, catch_z: float | None = None) -> tuple[ThrowPlan, Forgiveness | None]:
+    """The throw for the target (thrower's frame, mm; default cfg.target_mm), checked along the whole swing."""
+    spec = cfg.spec()
+    if spec is None:
+        raise SystemExit("No swing yet: python toss.py plan --design")
+    target = np.asarray(cfg.target_mm if target is None else target, float)
+    cz = cfg.catch_z_mm if catch_z is None else catch_z
+    if cfg.accel_deg_s2 > cfg.max_accel_deg_s2:
+        return ThrowPlan(False, f"acceleration {cfg.accel_deg_s2:.0f} deg/s^2 is over the cap {cfg.max_accel_deg_s2:.0f}"), None
+    args = (cfg.max_speed_deg_s, cfg.release_delay_s, cfg.speed_factor)
+    if cfg.elevation_deg is None:
+        plan, f = choose_elevation(chain, spec, target, cz, *args)
+        if plan is None:                               # nothing works at any elevation: say why at 45
+            plan, f = plan_throw(chain, spec, target, cz, 45.0, *args), None
+    else:
+        plan = plan_throw(chain, spec, target, cz, cfg.elevation_deg, *args)
+        f = forgiveness(chain, spec, plan, cz, cfg.speed_factor) if plan.ok else None
+    if plan.ok:
+        why = motion_problem(chain, pose_at(spec, 0.0, plan.base_deg), end_pose(spec, plan.base_deg), spec.tool_mm,
+                             KeepOut.of(cfg))
+        if why:
+            plan.ok, plan.reason = False, f"the swing isn't safe: {why}"
+    return plan, f
+
+
+def describe(plan: ThrowPlan, f: Forgiveness | None, cfg: TossCfg, say=print) -> None:
+    if not plan.ok:
+        say(f"NO THROW: {plan.reason}")
+        return
+    v, land = plan.velocity_m_s, plan.landing
+    el = math.degrees(math.atan2(v[2], float(np.hypot(v[0], v[1]))))
+    arms = ArmsFrame.of(cfg.thrower_in_catcher)
+    xy = land.xy * 1000.0
+    say(f"aim: base joint at {plan.base_deg:.1f} deg; swing joints {[j + 1 for j in cfg.joints]} at "
+        f"{plan.speed_deg_s:.1f} deg/s, accelerating at {cfg.accel_deg_s2:.0f} deg/s^2")
+    say(f"release {plan.release_progress_deg:.1f} deg into the {cfg.amplitude_deg:.0f} deg swing, {plan.release_time_s:.3f} s "
+        f"after it starts moving; full speed from {plan.cruise_deg[0]:.1f} to {plan.cruise_deg[1]:.1f} deg")
+    say(f"gripper told to open at {plan.trigger_progress_deg:.1f} deg ({cfg.release_delay_s * 1000:.0f} ms before the "
+        f"release point), by the {cfg.trigger} trigger")
+    say(f"the ball leaves at ({plan.release_mm[0]:.0f}, {plan.release_mm[1]:.0f}, {plan.release_mm[2]:.0f}) mm at "
+        f"{np.linalg.norm(v):.2f} m/s, {el:.1f} deg up; flies {land.t:.2f} s, {land.apex_z * 1000:.0f} mm at the top")
+    say(f"comes down at ({xy[0]:.0f}, {xy[1]:.0f}) mm in armfarm05's frame = ({arms.to_catcher(xy)[0]:.0f}, "
+        f"{arms.to_catcher(xy)[1]:.0f}) mm in armfarm03's")
+    if f is not None:
+        say(f"how forgiving: released 10 ms late {f.late_10ms_mm:+.0f} mm; 1% faster {f.speed_1pct_mm:+.0f} mm; "
+            f"heading 1 deg higher {f.elevation_1deg_mm:+.0f} mm")
+
+
+def plan_cmd(cfg: TossCfg, chain: Chain, design: bool = False, target=None, catch_z=None, step_deg: float = 15.0,
+             say=print) -> dict:
+    """Offline. --design first searches wind-up poses for the swing and saves the best."""
+    target = np.asarray(cfg.target_mm if target is None else target, float)
+    cz = cfg.catch_z_mm if catch_z is None else catch_z
+    if design:
+        rest = list(cfg.start_deg) if cfg.start_deg else [0.0] * chain.n
+        say("searching wind-up poses (a minute or so)...")
+        found = design_swing(chain, cfg.joints, cfg.amplitude_deg, cfg.accel_deg_s2, target, cz, KeepOut.of(cfg), rest,
+                             tuple(cfg.tool_mm), cfg.max_speed_deg_s, step_deg=step_deg, say=say)
+        if not found:
+            raise SystemExit("No safe swing reaches that target. Try a nearer target, a larger amplitude_deg, a higher "
+                             "accel_deg_s2, or other joints.")
+        for score, spec, p, f in found[:3]:
+            say(f"  wind-up {[round(q) for q in spec.start_deg]}, joints turn {spec.signs[0]:+d}: {p.speed_deg_s:.0f} deg/s, "
+                f"10 ms late {f.late_10ms_mm:+.0f} mm")
+        best = found[0][1]
+        cfg.start_deg, cfg.signs = [round(float(q), 2) for q in best.start_deg], list(best.signs)
+        say(f"saved the first: {cfg.save()}")
+    plan, f = throw_plan(cfg, chain, target, cz)
+    describe(plan, f, cfg, say)
+    return {"plan": plan.to_json(), "forgiveness": f.to_json() if f else None}
+
+
+# ---- arm and gripper ---------------------------------------------------------------------------------------
+
+async def joints_of(arm) -> list[float]:
+    return [float(v) for v in (await arm.get_joint_positions()).values]
+
+
+async def safe_stop(arm) -> None:
+    try:
+        await arm.stop()
+    except Exception:
+        pass
+
+
+async def move_joints(arm, q) -> None:
+    from viam.proto.component.arm import JointPositions
+    await arm.move_to_joint_positions(JointPositions(values=[float(v) for v in q]))
+
+
+async def go_slowly(arm, chain: Chain, cfg: TossCfg, q_to, say=print) -> None:
+    """To q_to at the wind-up speed, if the whole way there is clear."""
+    q_now = await joints_of(arm)
+    if float(np.max(np.abs(np.asarray(q_now) - np.asarray(q_to)))) < 0.2:
+        return
+    why = motion_problem(chain, q_now, q_to, tuple(cfg.tool_mm), KeepOut.of(cfg))
+    if why:
+        raise SystemExit(f"Refused: the way to the wind-up pose isn't clear: {why}. Move the arm nearer to it first.")
+    await arm.do_command({"set_speed": float(cfg.windup_speed_deg_s)})
+    await move_joints(arm, q_to)
+
+
+async def set_accel(arm, accel: float) -> bool:
+    try:
+        await arm.do_command({"set_acceleration": float(accel)})
+        return True
+    except Exception:
+        return False
+
+
+async def set_mm(gripper, cfg: TossCfg, mm: float) -> None:
+    await gripper.do_command({"set": cfg.counts(mm)})
+
+
+async def width_mm(gripper, cfg: TossCfg) -> float | None:
+    try:
+        return cfg.mm(float((await gripper.do_command({"get": True})).get("pos")))
+    except Exception:
+        return None
+
+
+async def swing(arm, spec, base_deg: float, w: float, accel: float, clock=now, let_go=None, timeout_s: float = 10.0):
+    """One swing from the wind-up pose to its end, the joints read throughout; let_go(t_cmd, recorder) runs
+    alongside (the release). Returns (command time, recorder, what let_go returned)."""
+    await arm.do_command({"set_speed": float(w)})
+    await set_accel(arm, accel)
+    rec = Recorder(lambda: joints_of(arm), clock)
+    stop = asyncio.Event()
+    reading = asyncio.ensure_future(rec.run(stop))
+    await asyncio.sleep(0.05)                          # a reading or two at rest first
+    t_cmd = clock()
+    move = asyncio.ensure_future(move_joints(arm, end_pose(spec, base_deg)))
+    rel = asyncio.ensure_future(let_go(t_cmd, rec)) if let_go else None
+    try:
+        await asyncio.wait_for(move, timeout_s)
+        sent = None
+        if rel is not None:
+            done, _ = await asyncio.wait({rel}, timeout=1.0)   # a release that never fired keeps the ball:
+            sent = rel.result() if rel in done else None       # never open it at the end of the swing
+    finally:
+        stop.set()
+        for task in (reading, rel, move):
+            if task is not None and not task.done():
+                task.cancel()
+    return t_cmd, rec, sent
+
+
+# ---- drills: no motion ------------------------------------------------------------------------------------
+
+async def probe(arm, gripper, cfg: TossCfg, out: Path | None = None, say=print) -> dict:
+    """Read the arm's joints, pose and kinematics; check our model of the arm against the arm's own answer."""
+    from worldarm.cell.geometry import unit
+    q = await joints_of(arm)
+    pose = await arm.get_end_position()
+    kin = await arm.get_kinematics()
+    fmt, data = kin[0], kin[1]
+    path = Path(cfg.kinematics)
+    if fmt == 2:                                        # URDF
+        path = path.with_suffix(".urdf")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data if isinstance(data, bytes) else bytes(data))
+    cfg.kinematics = str(path)
+    chain = load_chain(str(path))
+    M, _ = chain.frames(q)
+    pos_err = float(np.linalg.norm(M[:3, 3] - np.array([pose.x, pose.y, pose.z])))
+    ov = unit((pose.o_x, pose.o_y, pose.o_z))
+    dir_err = math.degrees(math.acos(max(-1.0, min(1.0, float(M[:3, 2] @ ov)))))
+    replies = {}
+    for cmd in ({"set_speed": float(cfg.windup_speed_deg_s)}, {"set_acceleration": float(cfg.accel_deg_s2)}):
+        try:
+            replies[next(iter(cmd))] = f"ok {await arm.do_command(cmd)}"
+        except Exception as e:
+            replies[next(iter(cmd))] = f"refused: {e}"
+    res = {"joints_deg": q, "end_mm": [pose.x, pose.y, pose.z], "end_ov": [pose.o_x, pose.o_y, pose.o_z, pose.theta],
+           "kinematics": str(path), "format": "urdf" if fmt == 2 else "sva", "joints": chain.n,
+           "limits_deg": chain.limits_deg, "model_error_mm": round(pos_err, 2), "model_error_deg": round(dir_err, 2),
+           "do_command": replies, "gripper_mm": await width_mm(gripper, cfg)}
+    cfg.save()
+    write_json(run_dir("probe", out) / "probe.json", res)
+    say(f"{chain.n} joints at {[round(v, 1) for v in q]} deg; kinematics saved to {path}")
+    say(f"our model of the arm vs. the arm: {pos_err:.1f} mm, {dir_err:.1f} deg apart at this pose")
+    if pos_err > 2.0 or dir_err > 1.0:
+        say("WARNING: the model disagrees with the arm. Don't plan throws until this is understood.")
+    for k, v in replies.items():
+        say(f"do_command {k}: {v}")
+    if not replies.get("set_acceleration", "").startswith("ok"):
+        say("the arm won't take an acceleration: set accel_deg_s2 in config/toss.json to what `dry` measures")
+    say(f"gripper opening: {res['gripper_mm']} mm")
+    return res
+
+
+def report(cfg: TossCfg, runs: Path | None = None, say=print) -> dict:
+    """How repeatable the throws are: per setting, the spread of the landings and how far off the plan."""
+    throws = load_throws(runs)
+    groups: dict[tuple, list] = {}
+    for t in throws:
+        if t.get("landing_catcher_mm") is not None:
+            groups.setdefault((round(t["speed_deg_s"], 0), round(t["base_deg"], 0), t["trigger"]), []).append(t)
+    res = {}
+    if not groups:
+        say("no measured throws yet: python toss.py throw --repeat 5")
+    for (w, base, trig), ts in sorted(groups.items()):
+        pts = np.array([t["landing_catcher_mm"] for t in ts], float)
+        plan = np.array([t["planned_catcher_mm"] for t in ts], float)
+        mean = pts.mean(axis=0)
+        d = np.linalg.norm(pts - mean, axis=1)
+        sd = pts.std(axis=0, ddof=1) if len(ts) > 1 else np.full(2, math.nan)
+        r95 = float(np.percentile(d, 95)) if len(ts) >= 10 else float(2.45 * np.sqrt(np.nanmean(sd ** 2))) if len(ts) > 1 else math.nan
+        late = [t["sent_progress_deg"] - t["trigger_deg"] for t in ts if t.get("sent_progress_deg") is not None]
+        late_ms = [1000.0 * x / w for x in late] if w else []
+        key = f"{w:.0f} deg/s, base {base:.0f}, {trig}"
+        res[key] = {"n": len(ts), "mean_mm": mean.round(1).tolist(), "sd_mm": np.round(sd, 1).tolist(),
+                    "radius95_mm": round(r95, 1), "off_plan_mm": (mean - plan.mean(axis=0)).round(1).tolist(),
+                    "release_ms_sd": round(statistics.stdev(late_ms), 1) if len(late_ms) > 1 else None}
+        say(f"{key}: {len(ts)} throws; spread sd ({sd[0]:.0f}, {sd[1]:.0f}) mm, 95% within {r95:.0f} mm; "
+            f"{np.linalg.norm(mean - plan.mean(axis=0)):.0f} mm off the plan")
+        if res[key]["release_ms_sd"] is not None:
+            say(f"  the open command went out within {res[key]['release_ms_sd']:.0f} ms (sd) of its moment")
+    return res
+
+
+def load_throws(runs: Path | None = None) -> list[dict]:
+    throws = []
+    for f in sorted(Path(runs or RUNS).glob("*-toss-throw*/throws.json")):
+        throws += json.loads(f.read_text())
+    return throws
+
+
+def calibrate(cfg: TossCfg, chain: Chain, runs: Path | None = None, fit=PARAMS, save: bool = True, say=print) -> dict:
+    """Fit speed factor, release delay and the arms' frames to the measured landings; save them."""
+    throws = load_throws(runs)
+    prior = {"speed_factor": cfg.speed_factor, "release_delay_s": cfg.release_delay_s, **cfg.thrower_in_catcher}
+    cal = fit_constants(chain, throws, prior, tuple(fit))
+    if cal.n == 0:
+        raise SystemExit("No measured throws yet: python toss.py throw --repeat 5")
+    for k in PARAMS:
+        sd = cal.sd.get(k)
+        say(f"  {k:<16} {cal.values[k]:9.4f}" + (f"  +- {sd:.4f}" if sd is not None else "  (held)"))
+    say(f"from {cal.n} throws: the landings now match the model within {cal.rms_mm:.0f} mm (rms)")
+    if cal.note:
+        say(f"note: {cal.note}")
+    if save:
+        cfg.speed_factor = round(cal.values["speed_factor"], 4)
+        cfg.release_delay_s = round(cal.values["release_delay_s"], 4)
+        cfg.thrower_in_catcher = {k: round(cal.values[k], 2) for k in ("x_mm", "y_mm", "yaw_deg")}
+        say(f"saved: {cfg.save()}")
+    return {"values": cal.values, "sd": cal.sd, "rms_mm": cal.rms_mm, "n": cal.n, "residuals_mm": cal.residuals_mm,
+            "note": cal.note}
+
+
+# ---- drills: the gripper -----------------------------------------------------------------------------------
+
+async def grip(gripper, cfg: TossCfg, teach: bool = False, repeat: int = 0, out: Path | None = None, say=print,
+               ask=input, clock=now) -> dict:
+    """--teach: close on the ball a millimetre at a time until it just holds. --repeat: how long the open command
+    takes to move the fingers (2 mm apart; an upper bound, a reading's round trip included)."""
+    res: dict = {}
+    if teach:
+        await set_mm(gripper, cfg, cfg.ball_diameter_mm + 15.0)
+        ask("Hold the ball between the fingers, then press Enter ")
+        mm = cfg.ball_diameter_mm + 2.0
+        while True:
+            await set_mm(gripper, cfg, mm)
+            await asyncio.sleep(SETTLE_S)
+            if ask(f"fingers at {mm:.0f} mm: let go of the ball. Does it stay? [y = it holds, Enter = 1 mm tighter] "
+                   ).strip().lower() == "y":
+                break
+            mm -= 1.0
+            if mm < cfg.ball_diameter_mm - 12.0:
+                raise SystemExit("12 mm tighter than the ball and it still doesn't hold: check ball_diameter_mm")
+        cfg.hold_mm = mm
+        say(f"holds at {mm:.0f} mm; saved: {cfg.save()}")
+        res["hold_mm"] = mm
+    if repeat:
+        if cfg.hold_mm is None:
+            raise SystemExit("Teach the grip first: python toss.py grip --teach")
+        lat, acks = [], []
+        for _ in range(repeat):
+            await set_mm(gripper, cfg, cfg.hold_mm)
+            await asyncio.sleep(SETTLE_S)
+            w0 = await width_mm(gripper, cfg)
+            t_send = clock()
+            opening = asyncio.ensure_future(set_mm(gripper, cfg, cfg.release_mm))
+            while clock() - t_send < 2.0:
+                w = await width_mm(gripper, cfg)
+                if w is not None and w0 is not None and w - w0 > 2.0:
+                    lat.append(clock() - t_send)
+                    break
+            await opening
+            acks.append(clock() - t_send)
+        if not lat:
+            raise SystemExit("The fingers never moved after the open command (or the gripper can't be read)")
+        res.update({"open_latency_s": lat, "median_s": statistics.median(lat),
+                    "sd_s": statistics.stdev(lat) if len(lat) > 1 else 0.0, "command_returned_s": acks})
+        say(f"open -> fingers 2 mm apart: median {res['median_s'] * 1000:.0f} ms, sd {res['sd_s'] * 1000:.0f} ms "
+            f"(over {len(lat)}); the command itself returned after {statistics.median(acks) * 1000:.0f} ms")
+        say(f"release_delay_s is {cfg.release_delay_s:.3f}; calibrate measures the real one from throws")
+        await set_mm(gripper, cfg, cfg.hold_mm + 15.0)
+    write_json(run_dir("grip", out) / "grip.json", res)
+    return res
+
+
+# ---- drills: moving ----------------------------------------------------------------------------------------
+
+async def windup(arm, chain: Chain, cfg: TossCfg, target=None, say=print) -> list[float]:
+    plan, _ = throw_plan(cfg, chain, target)
+    if not plan.ok:
+        raise SystemExit(f"No throw planned: {plan.reason}")
+    q = pose_at(cfg.spec(), 0.0, plan.base_deg)
+    try:
+        await go_slowly(arm, chain, cfg, q, say)
+    finally:
+        await safe_stop(arm)
+    say(f"at the wind-up pose {[round(float(v), 1) for v in q]}")
+    return list(q)
+
+
+async def dry(arm, chain: Chain, cfg: TossCfg, repeat: int = 3, scale: float = 1.0, target=None, out: Path | None = None,
+              say=print, clock=now) -> dict:
+    """The swing with no ball, `repeat` times: when it really starts after the command, how fast it really
+    cruises, how hard it accelerates, and how much that varies (the timed trigger's jitter)."""
+    plan, _ = throw_plan(cfg, chain, target)
+    if not plan.ok:
+        raise SystemExit(f"No throw planned: {plan.reason}")
+    spec = cfg.spec()
+    w, a = plan.speed_deg_s * scale, spec.accel_deg_s2
+    nominal = Trapezoid(spec.amplitude_deg, w, a)
+    swings = []
+    try:
+        for i in range(repeat):
+            await go_slowly(arm, chain, cfg, pose_at(spec, 0.0, plan.base_deg), say)
+            t_cmd, rec, _ = await swing(arm, spec, plan.base_deg, w, a, clock, timeout_s=nominal.duration + 5.0)
+            t, p = rec.progress(spec)
+            prof, sd, rms = fit_trapezoid(t - t_cmd, p, spec.amplitude_deg, w, a)
+            rtt = [r[2] for r in rec.readings]
+            s = {"start_latency_s": prof.t0, "w_deg_s": prof.w, "accel_deg_s2": prof.a, "fit_rms_deg": rms,
+                 "to_trigger_s": prof.time_at(plan.trigger_progress_deg), "readings": len(rtt),
+                 "reading_ms": 1000.0 * statistics.median(rtt) if rtt else None, "errors": rec.errors,
+                 "t": (t - t_cmd).tolist(), "progress": p.tolist()}
+            swings.append(s)
+            say(f"swing {i + 1}: started {prof.t0 * 1000:.0f} ms after the command, cruised at {prof.w:.1f} deg/s "
+                f"(asked {w:.1f}), accelerated at {prof.a:.0f} deg/s^2; {len(rtt)} readings, "
+                f"{s['reading_ms'] or 0:.0f} ms each")
+    finally:
+        await safe_stop(arm)
+    lat = [s["start_latency_s"] for s in swings]
+    trig = [s["to_trigger_s"] for s in swings]
+    res = {"plan": plan.to_json(), "scale": scale, "swings": swings,
+           "start_latency_s": statistics.mean(lat), "start_latency_sd_s": statistics.stdev(lat) if len(lat) > 1 else None,
+           "trigger_time_sd_s": statistics.stdev(trig) if len(trig) > 1 else None,
+           "speed_ratio": statistics.mean(s["w_deg_s"] for s in swings) / w,
+           "accel_deg_s2": statistics.mean(s["accel_deg_s2"] for s in swings)}
+    cfg.start_latency_s = round(res["start_latency_s"], 4)
+    say(f"start delay {res['start_latency_s'] * 1000:.0f} ms" + (f" +- {res['start_latency_sd_s'] * 1000:.0f} ms (sd)"
+        if res["start_latency_sd_s"] is not None else "") + f"; it cruised at {res['speed_ratio']:.3f} x the speed asked")
+    if abs(res["accel_deg_s2"] - a) > 0.15 * a:
+        say(f"it accelerated at {res['accel_deg_s2']:.0f}, not {a:.0f} deg/s^2: set accel_deg_s2 to what it does and re-plan")
+    if res["trigger_time_sd_s"] is not None:
+        rms = statistics.median([s["reading_ms"] for s in swings if s["reading_ms"]] or [0.0])
+        say(f"timed trigger would vary {res['trigger_time_sd_s'] * 1000:.0f} ms (sd); joint readings come every "
+            f"{rms:.0f} ms for the predicted one")
+    say(f"saved the start delay: {cfg.save()}")
+    write_json(run_dir("dry", out) / "dry.json", res)
+    return res
+
+
+def ask_landing(ask, planned_mm: np.ndarray, release_xy_mm: np.ndarray, arms: ArmsFrame) -> np.ndarray | None:
+    """The landing measured by hand from the target mark: cm past (+) or short (-), cm left (+) or right (-)."""
+    ans = ask("Where did it land vs. the target mark? cm past(+)/short(-), cm left(+)/right(-), e.g. 4,-2 "
+              "(Enter: not seen): ").strip()
+    if not ans:
+        return None
+    along, left = (float(v) * 10.0 for v in ans.replace(" ", "").split(","))
+    u = planned_mm - release_xy_mm
+    u = u / (np.linalg.norm(u) or 1.0)
+    return arms.to_catcher(planned_mm + along * u + left * np.array([-u[1], u[0]]))
+
+
+async def throw(arm, gripper, overhead, table, cfg: TossCfg, chain: Chain, repeat: int = 1, manual: bool = False,
+                target=None, catch_z=None, out: Path | None = None, say=print, ask=input, clock=now,
+                radius_px=(8.0, 30.0), table_px=None) -> list[dict]:
+    """Wind up, grip the ball barely, swing, let go at the trigger; then where it came down (the overhead
+    camera, or measured by hand with --manual). Every throw is logged as it happens."""
+    plan, f = throw_plan(cfg, chain, target, catch_z)
+    if not plan.ok:
+        raise SystemExit(f"No throw: {plan.reason}")
+    if cfg.hold_mm is None:
+        raise SystemExit("Teach the grip first: python toss.py grip --teach")
+    if cfg.trigger == "timed" and cfg.start_latency_s is None:
+        raise SystemExit("The timed trigger needs the start delay: python toss.py dry")
+    spec, arms = cfg.spec(), ArmsFrame.of(cfg.thrower_in_catcher)
+    cz = cfg.catch_z_mm if catch_z is None else catch_z
+    planned = plan.landing.xy * 1000.0
+    prof = Trapezoid(spec.amplitude_deg, plan.speed_deg_s, spec.accel_deg_s2)
+    out = run_dir("throw", out)
+    say(f"target mark: ({planned[0]:.0f}, {planned[1]:.0f}) mm in armfarm05's frame (x ahead of its base, y to its left)")
+    log: list[dict] = []
+    try:
+        for i in range(repeat):
+            await go_slowly(arm, chain, cfg, pose_at(spec, 0.0, plan.base_deg), say)
+            await set_mm(gripper, cfg, cfg.hold_mm + 15.0)
+            if ask(f"throw {i + 1}/{repeat}: hold the ball in the fingers, press Enter (s: stop) ").strip().lower() == "s":
+                break
+            await set_mm(gripper, cfg, cfg.hold_mm)
+            await asyncio.sleep(SETTLE_S)
+            if ask("let go of the ball; everyone clear of the throw? Enter: throw (s: stop) ").strip().lower() == "s":
+                break
+
+            async def let_go(t_cmd, rec):
+                return await release(lambda: set_mm(gripper, cfg, cfg.release_mm), spec, prof, plan.trigger_progress_deg,
+                                     cfg.trigger, t_cmd, cfg.start_latency_s, rec, clock, prof.duration + 3.0)
+
+            t_cmd, rec, sent = await swing(arm, spec, plan.base_deg, plan.speed_deg_s, spec.accel_deg_s2, clock, let_go,
+                                           timeout_s=prof.duration + 5.0)
+            t, p = rec.progress(spec)
+            fit, _, rms = fit_trapezoid(t - t_cmd, p, spec.amplitude_deg, plan.speed_deg_s, spec.accel_deg_s2)
+            if sent is None or sent.at is None:
+                why = sent.reason if sent is not None else "no answer in time"
+                say(f"throw {i + 1}: the release never fired ({why}); the ball should still be in the gripper")
+                log.append({"i": i + 1, "time": time.strftime("%H:%M:%S"), "released": False, "why": why,
+                            "readings": {"t": (t - t_cmd).tolist(), "progress": p.tolist()}})
+                write_json(out / "throws.json", log)
+                continue
+            sent_p = fit.progress(sent.at - t_cmd)
+            if manual or overhead is None:
+                landing = ask_landing(ask, planned, plan.release_mm[:2], arms)
+                how = "by hand"
+            else:
+                landing, how = await resting_ball(overhead.frame, table, radius_px, table_px)
+            entry = {"i": i + 1, "time": time.strftime("%H:%M:%S"), "spec": {**spec.__dict__, "tool_mm": list(spec.tool_mm)},
+                     "base_deg": plan.base_deg, "speed_deg_s": plan.speed_deg_s, "catch_z_mm": cz,
+                     "trigger": cfg.trigger, "trigger_deg": plan.trigger_progress_deg,
+                     "release_deg": plan.release_progress_deg, "release_delay_s": cfg.release_delay_s,
+                     "speed_factor": cfg.speed_factor, "sent": sent.to_json() if sent else None,
+                     "sent_progress_deg": sent_p, "swing_start_s": fit.t0, "swing_w_deg_s": fit.w,
+                     "swing_accel_deg_s2": fit.a, "swing_fit_rms_deg": rms,
+                     "readings": {"t": (t - t_cmd).tolist(), "progress": p.tolist()},
+                     "planned_thrower_mm": planned, "planned_catcher_mm": arms.to_catcher(planned),
+                     "landing_catcher_mm": None if landing is None else np.asarray(landing, float),
+                     "landing_how": how}
+            log.append(entry)
+            write_json(out / "throws.json", log)
+            if landing is None:
+                say(f"throw {i + 1}: landing not measured ({how})")
+            else:
+                miss = arms.to_thrower(landing) - planned
+                u = planned - plan.release_mm[:2]
+                u = u / (np.linalg.norm(u) or 1.0)
+                say(f"throw {i + 1}: {float(miss @ u):+.0f} mm past the plan, {float(miss @ np.array([-u[1], u[0]])):+.0f} mm "
+                    f"left; let go at {sent_p:.1f} deg (meant {plan.trigger_progress_deg:.1f})")
+    finally:
+        await safe_stop(arm)
+    return log
+
+
+async def hold_bowl_at(arm, xy, cfg: TossCfg, say=print) -> None:
+    """armfarm03 brings the bowl over xy (its frame, mm), held as taught: up, over, down, slowly."""
+    from viam.proto.common import Pose
+    h = cfg.bowl_hold
+    if h is None:
+        raise SystemExit("Teach how armfarm03 holds the bowl first: python toss.py catch --teach")
+    gx, gy = float(xy[0]) + h["dx"], float(xy[1]) + h["dy"]
+    reach = math.hypot(gx, gy)
+    if not 200.0 <= reach <= 700.0 or h["z"] < 100.0:
+        raise SystemExit(f"Refused: the bowl would have to be at ({gx:.0f}, {gy:.0f}, {h['z']:.0f}) mm, out of "
+                         "armfarm03's comfortable reach (200-700 mm out, 100 mm up). Move the arms or the target.")
+    await arm.do_command({"set_speed": float(cfg.catch_speed_deg_s)})
+    cur = await arm.get_end_position()
+    up = max(cur.z, h["z"]) + 80.0
+    held = dict(o_x=h["o_x"], o_y=h["o_y"], o_z=h["o_z"], theta=h["theta"])
+    await arm.move_to_position(Pose(x=cur.x, y=cur.y, z=up, o_x=cur.o_x, o_y=cur.o_y, o_z=cur.o_z, theta=cur.theta))
+    await arm.move_to_position(Pose(x=gx, y=gy, z=up, **held))
+    await arm.move_to_position(Pose(x=gx, y=gy, z=h["z"], **held))
+    say(f"bowl over ({float(xy[0]):.0f}, {float(xy[1]):.0f}) mm")
+
+
+async def teach_bowl(arm, overhead, table, cfg: TossCfg, say=print, ask=input, radius_px=(8.0, 30.0), table_px=None) -> dict:
+    """With armfarm03 holding the bowl and the ball lying in it: where the bowl's middle is relative to the flange."""
+    pose = await arm.get_end_position()
+    ask("armfarm03 holding the bowl, the ball lying in it: press Enter ")
+    xy, why = await resting_ball(overhead.frame, table, radius_px, table_px)
+    if xy is None:
+        raise SystemExit(f"The camera can't find the ball in the bowl: {why}")
+    cfg.bowl_hold = {"dx": pose.x - float(xy[0]), "dy": pose.y - float(xy[1]), "z": pose.z, "o_x": pose.o_x,
+                     "o_y": pose.o_y, "o_z": pose.o_z, "theta": pose.theta}
+    say(f"the bowl's middle is {math.hypot(cfg.bowl_hold['dx'], cfg.bowl_hold['dy']):.0f} mm from the flange; saved: "
+        f"{cfg.save()}")
+    return cfg.bowl_hold
+
+
+async def catch(catcher_arm, arm, gripper, overhead, table, cfg: TossCfg, chain: Chain, dry_run: bool = False,
+                manual: bool = False, target=None, catch_z=None, out: Path | None = None, say=print, ask=input, clock=now,
+                radius_px=(8.0, 30.0), table_px=None) -> dict:
+    """The thrower's settings say where the ball will come down; armfarm03 puts the bowl there; then the throw."""
+    plan, _ = throw_plan(cfg, chain, target, catch_z)
+    if not plan.ok:
+        raise SystemExit(f"No throw: {plan.reason}")
+    arms = ArmsFrame.of(cfg.thrower_in_catcher)
+    where = arms.to_catcher(plan.landing.xy * 1000.0)
+    say(f"the ball should come down at ({where[0]:.0f}, {where[1]:.0f}) mm in armfarm03's frame")
+    try:
+        await hold_bowl_at(catcher_arm, where, cfg, say)
+    finally:
+        await safe_stop(catcher_arm)
+    res = {"bowl_at_mm": where}
+    if dry_run:
+        return res
+    log = await throw(arm, gripper, overhead, table, cfg, chain, 1, manual, target, catch_z, out, say, ask, clock,
+                      radius_px, table_px)
+    if log and log[-1]["landing_catcher_mm"] is not None:
+        off = float(np.linalg.norm(np.asarray(log[-1]["landing_catcher_mm"]) - where))
+        res.update({"off_mm": off, "caught": off <= cfg.bowl_diameter_mm / 2.0})
+        say(f"{'CAUGHT' if res['caught'] else 'missed'}: the ball rests {off:.0f} mm from the bowl's middle")
+    return res
+
+
+# ---- the command line --------------------------------------------------------------------------------------
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    def aim(s):
+        s.add_argument("--distance", type=float, help="target this many mm straight ahead of armfarm05's base")
+        s.add_argument("--target", help="target x,y in armfarm05's frame (mm)")
+        s.add_argument("--catch-z", type=float, help="height the ball comes down to (mm, armfarm05's frame)")
+    sub.add_parser("probe")
+    s = sub.add_parser("plan")
+    aim(s)
+    s.add_argument("--design", action="store_true", help="search a wind-up pose and swing first (saved)")
+    s.add_argument("--step", type=float, default=15.0, help="design: grid step (deg)")
+    for name in ("windup", "dry", "throw", "catch"):
+        s = sub.add_parser(name)
+        aim(s)
+        s.add_argument("--yes", action="store_true", help="skip the 'type go' question")
+        if name == "dry":
+            s.add_argument("--repeat", type=int, default=3)
+            s.add_argument("--scale", type=float, default=1.0, help="swing at this share of the planned speed")
+        if name == "throw":
+            s.add_argument("--repeat", type=int, default=1)
+        if name in ("throw", "catch"):
+            s.add_argument("--manual", action="store_true", help="measure the landing by hand, not with the camera")
+        if name == "catch":
+            s.add_argument("--teach", action="store_true", help="no motion: learn how armfarm03 holds the bowl")
+            s.add_argument("--dry", action="store_true", help="move the bowl, don't throw")
+    s = sub.add_parser("grip")
+    s.add_argument("--teach", action="store_true")
+    s.add_argument("--repeat", type=int, default=0)
+    sub.add_parser("report")
+    s = sub.add_parser("calibrate")
+    s.add_argument("--fit", default=",".join(PARAMS), help=f"which to fit, of {','.join(PARAMS)}")
+    return p
+
+
+def target_of(cfg: TossCfg, args) -> np.ndarray | None:
+    if getattr(args, "target", None):
+        return np.array([float(v) for v in args.target.split(",")], float)
+    if getattr(args, "distance", None):
+        return np.array([args.distance, 0.0])
+    return None
+
+
+async def main(argv: list[str] | None = None) -> None:
+    args = parser().parse_args(argv)
+    cfg = TossCfg.load()
+    target, catch_z = target_of(cfg, args), getattr(args, "catch_z", None)
+    if args.cmd == "plan":
+        plan_cmd(cfg, chain_of(cfg), args.design, target, catch_z, args.step)
+        return
+    if args.cmd == "report":
+        report(cfg)
+        return
+    if args.cmd == "calibrate":
+        calibrate(cfg, chain_of(cfg), fit=tuple(args.fit.split(",")))
+        return
+    from viam.components.arm import Arm
+    from viam.components.gripper import Gripper
+
+    from worldarm.ball.config import BallCfg
+    from worldarm.ball.live import Overhead
+    from worldarm.toss import machines
+
+    chain = chain_of(cfg) if args.cmd != "probe" else None
+    teaching = args.cmd == "catch" and args.teach
+    if args.cmd in MOVES and not teaching and not args.yes:
+        speed = ""
+        if args.cmd in ("dry", "throw", "catch"):
+            plan, _ = throw_plan(cfg, chain, target, catch_z)
+            if not plan.ok:
+                raise SystemExit(f"No throw: {plan.reason}")
+            speed = f" at up to {plan.speed_deg_s * getattr(args, 'scale', 1.0):.0f} deg/s"
+        if input(f"This MOVES {MOVES[args.cmd]}{speed}. Everyone clear of both arms and the throw path, someone at the "
+                 "E-stop? Type 'go': ").strip() != "go":
+            raise SystemExit("Cancelled.")
+    needs_catcher = args.cmd == "catch" or (args.cmd == "throw" and not args.manual)
+    thrower = catcher = None
+    try:
+        if not teaching:
+            thrower, tv = await machines.connect(cfg.thrower_env, cfg.thrower)
+            arm = Arm.from_robot(thrower, machines.component(tv, "VIAM_ARM", "arm"))
+            gripper = Gripper.from_robot(thrower, machines.component(tv, "VIAM_GRIPPER", "gripper"))
+        overhead = table = table_px = None
+        bcfg = BallCfg.load(cfg.catcher)
+        if needs_catcher:
+            catcher, cv = await machines.connect(cfg.catcher_env, cfg.catcher)
+            overhead, table, table_px = Overhead(catcher, cfg.camera), bcfg.table(), bcfg.table_px
+            if table is None:
+                raise SystemExit("No table map for the overhead camera: python ball.py calibrate (or use --manual)")
+        if args.cmd == "probe":
+            await probe(arm, gripper, cfg)
+        elif args.cmd == "windup":
+            await windup(arm, chain, cfg, target)
+        elif args.cmd == "dry":
+            await dry(arm, chain, cfg, args.repeat, args.scale, target)
+        elif args.cmd == "grip":
+            await grip(gripper, cfg, args.teach, args.repeat)
+        elif args.cmd == "throw":
+            await throw(arm, gripper, overhead, table, cfg, chain, args.repeat, args.manual, target, catch_z,
+                        radius_px=tuple(bcfg.ball_radius_px), table_px=table_px)
+        elif args.cmd == "catch":
+            catcher_arm = Arm.from_robot(catcher, machines.component(cv, "VIAM_ARM", "arm"))
+            if args.teach:
+                await teach_bowl(catcher_arm, overhead, table, cfg, radius_px=tuple(bcfg.ball_radius_px), table_px=table_px)
+            else:
+                await catch(catcher_arm, arm, gripper, overhead, table, cfg, chain, args.dry, args.manual, target,
+                            catch_z, radius_px=tuple(bcfg.ball_radius_px), table_px=table_px)
+    finally:
+        for m in (thrower, catcher):
+            if m is not None:
+                await m.close()
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nStopped.")
