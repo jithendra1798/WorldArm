@@ -27,7 +27,7 @@ class TossCfg:
     # the ball and the grip
     ball_diameter_mm: float = 50.0          # measure it
     hold_mm: float | None = None            # finger opening that just holds the ball (toss.py grip --teach); unset:
-    grip_torque_pct: int = 67               # close until the fingers stop on the ball, at this torque (holds, not crushes)
+    grip_torque_pct: int = 25               # close until the fingers stop on the ball, at this torque: a light hold
     grip_speed: int = 1500
     release_speed: int = 5000               # the gripper's top speed: open as fast as it can, at the trigger
     release_mm: float = 84.0                # opening on release: fully open, the fingers clear the ball fastest

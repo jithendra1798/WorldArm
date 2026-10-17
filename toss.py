@@ -724,18 +724,20 @@ async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: s
         hover = max(cfg.pick_hover_mm, est["height"] + 40.0)
         await line_to(arm, chain, cfg, (est["x"], est["y"], gz + hover), reaching, "above the ball")
         await line_to(arm, chain, cfg, (est["x"], est["y"], gz), near_table, "down to the ball")
-        await gripper.do_command({"set": float(close_pos)})
-        await asyncio.sleep(0.6)
+        await gripper.do_command({"grab_with_torque": {"position": 0, "speed": int(cfg.grip_speed),
+                                                       "torque": int(cfg.grip_torque_pct)}})   # gently, until it stops
+        await asyncio.sleep(0.8)
         pos = (await gripper.do_command({"get": True})).get("pos")
         try:
             held = bool((await gripper.is_holding_something()).is_holding_something)
         except Exception:
             held = False
-        held = held or (pos is not None and float(pos) > close_pos + 30)   # stopped >3 mm short: the ball is there
+        width = None if pos is None else cfg.mm(float(pos))
+        held = held or (width is not None and 15.0 <= width <= cfg.pick_ball_height_mm + 8.0)   # stopped on a ball
         await line_to(arm, chain, cfg, (est["x"], est["y"], max(gz + 150.0, 320.0)), near_table, "lift")
     finally:
         await safe_stop(arm)
-    say(f"grip at {pos} (told {close_pos}): {'holding the ball' if held else 'NO ball in the gripper'}")
+    say(f"fingers stopped at {width if width is None else round(width)} mm: {'holding the ball' if held else 'NO ball in the gripper'}")
     if not held:
         await gripper.do_command({"set": float(cfg.full_open_counts)})
     return held
