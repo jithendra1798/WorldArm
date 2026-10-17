@@ -1011,7 +1011,7 @@ def parser() -> argparse.ArgumentParser:
             s.add_argument("--repeat", type=int, default=1)
         if name == "throw":
             s.add_argument("--hand", action="store_true", help="hand the ball to the gripper instead of it picking it up")
-            s.add_argument("--close-pct", type=float, help="grip: close the fingers to this share of their travel")
+            s.add_argument("--grip", type=int, help="grip force: torque percent (default 25; higher = tighter)")
             s.add_argument("--measure", action="store_true", help="type where each throw landed")
             s.add_argument("--tcp-limit", type=float, default=1100.0, help="the arm's tool speed cap (mm/s)")
             s.add_argument("--release-shift", type=float, default=0.0, help="release this long after peak speed (s)")
@@ -1101,8 +1101,8 @@ async def main(argv: list[str] | None = None) -> None:
         elif args.cmd == "throw" and (args.taught or args.flick):   # Waj's taught throw, or his wrist flick
             cam = machines.component(tv, "VIAM_CAMERA", "cam")
             picker = None if args.hand else (lambda: pick_ball(arm, gripper, thrower, chain, cfg, cam))
-            if args.close_pct is not None:
-                cfg.close_pct = args.close_pct
+            if args.grip is not None:
+                cfg.grip_torque_pct = args.grip
 
             async def fresh():
                 m, _ = await machines.connect(cfg.thrower_env, cfg.thrower)
@@ -1113,8 +1113,8 @@ async def main(argv: list[str] | None = None) -> None:
             cam = machines.component(tv, "VIAM_CAMERA", "cam")
             picker = None if args.hand else (lambda seen=None, grab=True: pick_ball(arm, gripper, thrower, chain, cfg, cam,
                                                                                   seen=seen, grab=grab))
-            if args.close_pct is not None:
-                cfg.close_pct = args.close_pct
+            if args.grip is not None:
+                cfg.grip_torque_pct = args.grip
             fit_under_cap(cfg, chain, args.tcp_limit)
             await throw(arm, gripper, overhead, table, cfg, chain, args.repeat, True, target, catch_z,
                         radius_px=tuple(bcfg.ball_radius_px), table_px=table_px, picker=picker,
