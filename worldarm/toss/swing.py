@@ -27,7 +27,7 @@ from worldarm.toss.physics import G, Landing, Release, fly, speed_for
 class SwingSpec:
     start_deg: list[float]            # wind-up pose, all joints
     joints: list[int]                 # which joints swing (0-based), all by the same angle
-    signs: list[int]                  # direction of each (+1 / -1)
+    signs: list[float]                # each one's rate and direction (+-1: all the same; 2: twice as fast)
     amplitude_deg: float              # how far each swinging joint turns
     accel_deg_s2: float               # joint acceleration and deceleration
     tool_mm: tuple = (0.0, 0.0, 155.0)  # the ball's centre in the flange frame
@@ -151,8 +151,9 @@ def plan_throw(chain: Chain, spec: SwingSpec, target_xy_mm, catch_z_mm: float, e
                      u / 1000.0 * w * speed_factor, None, cruise)
     plan.landing = fly(Release(p0 / 1000.0, plan.velocity_m_s), catch_z_mm / 1000.0)
     problems = []
-    if w > max_speed_deg_s:
-        problems.append(f"needs {w:.0f} deg/s, more than the {max_speed_deg_s:.0f} allowed")
+    fastest = w * max(abs(float(r)) for r in spec.signs)       # the joint turning fastest
+    if fastest > max_speed_deg_s:
+        problems.append(f"needs {fastest:.0f} deg/s at its fastest joint, more than the {max_speed_deg_s:.0f} allowed")
     if not (cruise[0] + 2.0 <= trigger and rel_p <= cruise[1] - 2.0):
         problems.append(f"release at {rel_p:.1f} deg (gripper told at {trigger:.1f}) isn't inside the full-speed part "
                         f"{cruise[0]:.1f}-{cruise[1]:.1f} deg: start the swing earlier, swing further, or accelerate harder")

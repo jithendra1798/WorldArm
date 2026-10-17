@@ -25,8 +25,11 @@ from worldarm.toss.swing import SwingSpec
 
 
 def progress_of(q, spec: SwingSpec) -> float:
-    """How far the swing has got: the swinging joints' mean turn from the wind-up pose (deg)."""
-    return float(np.mean([s * (q[j] - spec.start_deg[j]) for j, s in zip(spec.joints, spec.signs)]))
+    """How far the swing has got (deg of progress; each swinging joint turns its rate times that): the least-squares
+    fit to the joints' turns from the wind-up pose (with every rate +-1, their mean turn)."""
+    r = np.array(spec.signs, float)
+    d = np.array([q[j] - spec.start_deg[j] for j in spec.joints], float)
+    return float(r @ d / (r @ r))
 
 
 @dataclass

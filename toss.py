@@ -340,8 +340,9 @@ async def width_mm(gripper, cfg: TossCfg) -> float | None:
 async def swing(arm, spec, base_deg: float, w: float, accel: float, clock=now, let_go=None, timeout_s: float = 10.0):
     """One swing from the wind-up pose to its end, the joints read throughout; let_go(t_cmd, recorder) runs
     alongside (the release). Returns (command time, recorder, what let_go returned)."""
-    await arm.do_command({"set_speed": float(w)})
-    await set_accel(arm, accel)
+    fastest = max(abs(float(r)) for r in spec.signs)        # the arm's settings are for its fastest joint
+    await arm.do_command({"set_speed": float(w * fastest)})
+    await set_accel(arm, accel * fastest)
     rec = Recorder(lambda: joints_of(arm), clock)
     stop = asyncio.Event()
     reading = asyncio.ensure_future(rec.run(stop))
@@ -1092,7 +1093,8 @@ def parser() -> argparse.ArgumentParser:
             s.add_argument("--hand", action="store_true", help="hand the ball to the gripper instead of it picking it up")
             s.add_argument("--hold-mm", type=float, help="grip: where the fingers stop, mm as the gripper reads it (bigger = looser)")
             s.add_argument("--measure", action="store_true", help="type where each throw landed")
-            s.add_argument("--tcp-limit", type=float, default=1100.0, help="the arm's tool speed cap (mm/s)")
+            s.add_argument("--tcp-limit", type=float, default=1250.0,
+                           help="the arm's tool speed cap (mm/s; it faults near 1300 at the flange)")
             s.add_argument("--speed", type=float, help="swing speed (deg/s); the ball flies as far as that throws it")
             s.add_argument("--angle", type=float, help="release angle above horizontal (deg; default 45)")
             s.add_argument("--release-shift", type=float, default=0.0, help="release this long after peak speed (s)")
