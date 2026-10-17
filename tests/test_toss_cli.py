@@ -25,7 +25,8 @@ def cfg(tmp_path, monkeypatch):
     kin.write_text(json.dumps(XARMISH))
     c = TossCfg(kinematics=str(kin), start_deg=list(SWING["start_deg"]), signs=list(SWING["signs"]),
                 joints=list(SWING["joints"]), tool_mm=TOOL, target_mm=(800.0, 0.0), catch_z_mm=25.0, hold_mm=46.0,
-                thrower_in_catcher=ARMS.to_json())
+                thrower_in_catcher=ARMS.to_json(), throw_mm=None,   # aim at a point; this test arm throws over its base
+                clear_base_mm=0.0, walls=[], ceiling_z_mm=1300.0)
     c.save()
     return c
 
