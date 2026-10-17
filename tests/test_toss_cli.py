@@ -216,7 +216,8 @@ def test_a_release_that_never_fires_keeps_the_ball_and_says_so(cfg):
     lines = []
     log = run(toss.throw(world.arm, world.gripper, world, TABLE, cfg, CHAIN, say=lines.append, ask=quiet))
     assert log[0]["released"] is False and any("never fired" in l for l in lines)
-    assert world.gripper.calls[-1] == {"set": cfg.counts(cfg.hold_mm)}   # never told to open
+    sets = [c for c in world.gripper.calls if "set" in c]
+    assert sets[-1] == {"set": cfg.counts(cfg.hold_mm)}                  # never told to open
     assert world.released == [] and world.arm.calls[-1][0] == "stop"
 
 

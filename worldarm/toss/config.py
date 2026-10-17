@@ -26,7 +26,9 @@ class TossCfg:
     kinematics: str = "config/kinematics_armfarm05.json"   # the thrower's own model (toss.py probe)
     # the ball and the grip
     ball_diameter_mm: float = 50.0          # measure it
-    hold_mm: float | None = None            # finger opening that just holds the ball (toss.py grip --teach)
+    hold_mm: float | None = None            # finger opening that just holds the ball (toss.py grip --teach); unset:
+    grip_torque_pct: int = 20               # close gently until the fingers stop on the ball, at this torque
+    grip_speed: int = 1500
     release_mm: float = 84.0                # opening on release: fully open, the fingers clear the ball fastest
     max_open_mm: float = 84.0               # xArm gripper: 850 counts at 84 mm (chapter 1's GripperCfg)
     full_open_counts: float = 850.0

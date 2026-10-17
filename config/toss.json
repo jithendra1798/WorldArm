@@ -6,16 +6,25 @@
   "camera": "overview-cam",
   "kinematics": "config/kinematics_armfarm05.urdf",
   "ball_diameter_mm": 50.0,
-  "hold_mm": 52.0,
+  "hold_mm": null,
+  "grip_torque_pct": 20,
+  "grip_speed": 1500,
   "release_mm": 84.0,
   "max_open_mm": 84.0,
   "full_open_counts": 850.0,
+  "pick_segmenter": "black-ball-segmenter",
+  "pick_look_mm": [
+    380.0,
+    0.0,
+    325.0
+  ],
+  "pick_clearance_mm": 5.0,
   "start_deg": [
-    4.157,
-    -27.0,
+    -15.843,
+    -47.0,
     -57.0,
     0.0,
-    -59.0,
+    -79.0,
     0.0
   ],
   "joints": [
@@ -28,7 +37,7 @@
     1,
     1
   ],
-  "amplitude_deg": 40.0,
+  "amplitude_deg": 80.0,
   "accel_deg_s2": 1000.0,
   "tool_mm": [
     0.0,
@@ -76,7 +85,7 @@
   ],
   "catch_z_mm": 25.0,
   "min_throw_mm": 200.0,
-  "throw_mm": 219.0,
+  "throw_mm": 600.0,
   "heading_deg": null,
   "clear_base_mm": 250.0,
   "speed_factor": 0.947,

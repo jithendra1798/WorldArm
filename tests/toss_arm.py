@@ -199,6 +199,8 @@ class FakeGripper:
             self._task = asyncio.ensure_future(self._drive(target, now() + self.open_delay))
             await asyncio.sleep(self.rtt / 2)
             return {}
+        if "grab_with_torque" in cmd:                      # close until something stops the fingers
+            return await self.do_command({"set": float(cmd["grab_with_torque"].get("position", 0))})
         if "get" in cmd:
             await asyncio.sleep(self.rtt / 2)
             pos = self.mm / 84.0 * 850.0

@@ -229,6 +229,25 @@ async def set_mm(gripper, cfg: TossCfg, mm: float) -> None:
     await gripper.do_command({"set": cfg.counts(mm)})
 
 
+async def grip_ball(gripper, cfg: TossCfg) -> float | None:
+    """Hold the ball barely: the taught opening if there is one, else close gently until the fingers stop on the
+    ball (a low torque cap). Returns the finger opening it ended at."""
+    if cfg.hold_mm is not None:
+        await set_mm(gripper, cfg, cfg.hold_mm)
+    else:
+        await gripper.do_command({"grab_with_torque": {"position": 0, "speed": int(cfg.grip_speed),
+                                                       "torque": int(cfg.grip_torque_pct)}})
+    await asyncio.sleep(0.8)
+    return await width_mm(gripper, cfg)
+
+
+def holding(width: float | None, cfg: TossCfg) -> bool:
+    """The fingers stopped on the ball short of where they were sent."""
+    if width is None:
+        return False
+    return width > (cfg.hold_mm + 1.0 if cfg.hold_mm is not None else 0.4 * cfg.ball_diameter_mm)
+
+
 async def width_mm(gripper, cfg: TossCfg) -> float | None:
     try:
         return cfg.mm(float((await gripper.do_command({"get": True})).get("pos")))
@@ -507,8 +526,6 @@ async def find_ball(machine, cfg: TossCfg, camera: str) -> np.ndarray | None:
 async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: str = "cam", say=print) -> bool:
     """Look down from the look pose, find the ball, look again from closer, then down over it, close to the
     taught grip, lift. Every move slow and checked along its whole path. True if the fingers stopped on the ball."""
-    if cfg.hold_mm is None:
-        raise SystemExit("Teach the grip first: python toss.py grip --teach")
     z_ball = cfg.table_z_mm + cfg.ball_diameter_mm / 2.0
     reaching = dataclasses.replace(KeepOut.of(cfg), reach_mm=300.0)    # reaching down near the base folds it more
     near_table = dataclasses.replace(reaching, clearance_mm=cfg.pick_clearance_mm)
@@ -535,14 +552,12 @@ async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: s
             ball = again
         await to((ball[0], ball[1], z_ball + 60.0), "just above the ball", near_table)
         await to((ball[0], ball[1], z_ball), "down to the ball", near_table)
-        await set_mm(gripper, cfg, cfg.hold_mm)
-        await asyncio.sleep(0.8)
-        width = await width_mm(gripper, cfg)
+        width = await grip_ball(gripper, cfg)
         await to((ball[0], ball[1], z_ball + 150.0), "up with the ball", near_table)
     finally:
         await safe_stop(arm)
-    held = width is not None and width > cfg.hold_mm + 1.0       # the ball stopped the fingers short of the grip
-    say(f"fingers at {width} mm (told {cfg.hold_mm:.0f}): {'holding the ball' if held else 'NO ball in the gripper'}")
+    held = holding(width, cfg)
+    say(f"fingers at {width if width is None else round(width)} mm: {'holding the ball' if held else 'NO ball in the gripper'}")
     return held
 
 
@@ -566,8 +581,6 @@ async def throw(arm, gripper, overhead, table, cfg: TossCfg, chain: Chain, repea
     plan, f = throw_plan(cfg, chain, target, catch_z)
     if not plan.ok:
         raise SystemExit(f"No throw: {plan.reason}")
-    if cfg.hold_mm is None:
-        raise SystemExit("Teach the grip first: python toss.py grip --teach")
     if cfg.trigger == "timed" and cfg.start_latency_s is None:
         raise SystemExit("The timed trigger needs the start delay: python toss.py dry")
     spec, arms = cfg.spec(), ArmsFrame.of(cfg.thrower_in_catcher)
@@ -589,11 +602,12 @@ async def throw(arm, gripper, overhead, table, cfg: TossCfg, chain: Chain, repea
                     break
             else:
                 await go_slowly(arm, chain, cfg, pose_at(spec, 0.0, plan.base_deg), say)
-                await set_mm(gripper, cfg, cfg.hold_mm + 15.0)
+                await set_mm(gripper, cfg, cfg.ball_diameter_mm + 15.0)
                 if ask(f"throw {i + 1}/{repeat}: hold the ball in the fingers, press Enter (s: stop) ").strip().lower() == "s":
                     break
-                await set_mm(gripper, cfg, cfg.hold_mm)
-                await asyncio.sleep(SETTLE_S)
+                if not holding(await grip_ball(gripper, cfg), cfg):
+                    say("the fingers closed on nothing: put the ball between them")
+                    continue
                 if ask("let go of the ball; everyone clear of the throw? Enter: throw (s: stop) ").strip().lower() == "s":
                     break
 
