@@ -69,7 +69,14 @@ def write_json(path: Path, obj) -> None:
 
 
 def run_dir(kind: str, out: Path | None = None) -> Path:
-    out = Path(out) if out else RUNS / f"{time.strftime('%Y%m%d-%H%M%S')}-toss-{kind}"
+    """A fresh log folder (never one another run this second already writes to)."""
+    if out:
+        out = Path(out)
+    else:
+        base = RUNS / f"{time.strftime('%Y%m%d-%H%M%S')}-toss-{kind}"
+        out, k = base, 2
+        while out.exists():
+            out, k = base.with_name(f"{base.name}-{k}"), k + 1
     out.mkdir(parents=True, exist_ok=True)
     return out
 
