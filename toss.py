@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import json
 import math
 import statistics
@@ -36,7 +37,7 @@ import numpy as np
 
 from worldarm.toss.calibrate import PARAMS, fit_constants
 from worldarm.toss.config import TossCfg
-from worldarm.toss.kinematics import Chain, load_chain
+from worldarm.toss.kinematics import Chain, load_chain, solve_down
 from worldarm.toss.landing import ArmsFrame, resting_ball
 from worldarm.toss.profile import Trapezoid, fit_trapezoid
 from worldarm.toss.sweep import KeepOut, motion_problem
@@ -46,7 +47,8 @@ from worldarm.toss.trigger import Recorder, release
 
 RUNS = Path("runs")
 SETTLE_S = 0.5               # after a gripper move
-MOVES = {"windup": "armfarm05 to the wind-up pose (slowly)", "dry": "armfarm05 swings, no ball",
+MOVES = {"pick": "armfarm05 finds the ball with its camera and picks it up (slowly)",
+         "windup": "armfarm05 to the wind-up pose (slowly)", "dry": "armfarm05 swings, no ball",
          "throw": "armfarm05 swings and throws the ball", "catch": "armfarm03 moves the bowl, then armfarm05 throws"}
 
 
@@ -199,12 +201,12 @@ async def move_joints(arm, q) -> None:
     await arm.move_to_joint_positions(JointPositions(values=[float(v) for v in q]))
 
 
-async def go_slowly(arm, chain: Chain, cfg: TossCfg, q_to, say=print) -> None:
+async def go_slowly(arm, chain: Chain, cfg: TossCfg, q_to, say=print, keep: KeepOut | None = None) -> None:
     """To q_to at the wind-up speed, if the whole way there is clear."""
     q_now = await joints_of(arm)
     if float(np.max(np.abs(np.asarray(q_now) - np.asarray(q_to)))) < 0.2:
         return
-    why = motion_problem(chain, q_now, q_to, tuple(cfg.tool_mm), KeepOut.of(cfg))
+    why = motion_problem(chain, q_now, q_to, tuple(cfg.tool_mm), keep or KeepOut.of(cfg))
     if why:
         raise SystemExit(f"Refused: the way to the wind-up pose isn't clear: {why}. Move the arm nearer to it first.")
     try:
@@ -481,6 +483,69 @@ async def dry(arm, chain: Chain, cfg: TossCfg, repeat: int = 3, scale: float = 1
     return res
 
 
+async def find_ball(machine, cfg: TossCfg, camera: str) -> np.ndarray | None:
+    """The ball's centre (mm, armfarm05's frame) from the wrist camera and the ball segmenter: of everything it
+    segments, what sits on the table at the ball's height, nearest the camera's view centre."""
+    from viam.proto.common import PoseInFrame
+    from viam.services.vision import VisionClient
+    objs = await VisionClient.from_robot(machine, cfg.pick_segmenter).get_object_point_clouds(camera)
+    found = []
+    for o in objs:
+        gs = o.geometries.geometries
+        if gs:
+            w = await machine.transform_pose(PoseInFrame(reference_frame=o.geometries.reference_frame, pose=gs[0].center),
+                                             "world")
+            found.append(np.array([w.pose.x, w.pose.y, w.pose.z]))
+    z_ball = cfg.table_z_mm + cfg.ball_diameter_mm / 2.0
+    on_table = [b for b in found if abs(b[2] - z_ball) < 60.0]
+    if not on_table:
+        return None
+    look = np.asarray(cfg.pick_look_mm[:2], float)
+    return min(on_table, key=lambda b: float(np.linalg.norm(b[:2] - look)))
+
+
+async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: str = "cam", say=print) -> bool:
+    """Look down from the look pose, find the ball, look again from closer, then down over it, close to the
+    taught grip, lift. Every move slow and checked along its whole path. True if the fingers stopped on the ball."""
+    if cfg.hold_mm is None:
+        raise SystemExit("Teach the grip first: python toss.py grip --teach")
+    z_ball = cfg.table_z_mm + cfg.ball_diameter_mm / 2.0
+    reaching = dataclasses.replace(KeepOut.of(cfg), reach_mm=300.0)    # reaching down near the base folds it more
+    near_table = dataclasses.replace(reaching, clearance_mm=cfg.pick_clearance_mm)
+
+    async def to(xyz, label: str, keep: KeepOut | None = None) -> None:
+        q = solve_down(chain, xyz, await joints_of(arm), cfg.tool_mm)
+        if q is None:
+            raise SystemExit(f"Can't reach {label} at ({xyz[0]:.0f}, {xyz[1]:.0f}, {xyz[2]:.0f}) mm with the gripper down")
+        await go_slowly(arm, chain, cfg, q, say, keep=keep or reaching)
+
+    try:
+        await set_mm(gripper, cfg, cfg.ball_diameter_mm + 25.0)
+        await to(cfg.pick_look_mm, "the look pose")
+        await asyncio.sleep(0.5)
+        ball = await find_ball(machine, cfg, camera)
+        if ball is None:
+            say("no ball on the table in view: put it in front of armfarm05, about 40 cm out")
+            return False
+        say(f"ball seen at ({ball[0]:.0f}, {ball[1]:.0f}, {ball[2]:.0f}) mm")
+        await to((ball[0], ball[1], z_ball + 180.0), "above the ball")
+        await asyncio.sleep(0.4)
+        again = await find_ball(machine, cfg, camera)       # from closer: a better fix
+        if again is not None and float(np.linalg.norm(again[:2] - ball[:2])) < 80.0:
+            ball = again
+        await to((ball[0], ball[1], z_ball + 60.0), "just above the ball", near_table)
+        await to((ball[0], ball[1], z_ball), "down to the ball", near_table)
+        await set_mm(gripper, cfg, cfg.hold_mm)
+        await asyncio.sleep(0.8)
+        width = await width_mm(gripper, cfg)
+        await to((ball[0], ball[1], z_ball + 150.0), "up with the ball", near_table)
+    finally:
+        await safe_stop(arm)
+    held = width is not None and width > cfg.hold_mm + 1.0       # the ball stopped the fingers short of the grip
+    say(f"fingers at {width} mm (told {cfg.hold_mm:.0f}): {'holding the ball' if held else 'NO ball in the gripper'}")
+    return held
+
+
 def ask_landing(ask, planned_mm: np.ndarray, release_xy_mm: np.ndarray, arms: ArmsFrame) -> np.ndarray | None:
     """The landing measured by hand from the target mark: cm past (+) or short (-), cm left (+) or right (-)."""
     ans = ask("Where did it land vs. the target mark? cm past(+)/short(-), cm left(+)/right(-), e.g. 4,-2 "
@@ -495,7 +560,7 @@ def ask_landing(ask, planned_mm: np.ndarray, release_xy_mm: np.ndarray, arms: Ar
 
 async def throw(arm, gripper, overhead, table, cfg: TossCfg, chain: Chain, repeat: int = 1, manual: bool = False,
                 target=None, catch_z=None, out: Path | None = None, say=print, ask=input, clock=now,
-                radius_px=(8.0, 30.0), table_px=None) -> list[dict]:
+                radius_px=(8.0, 30.0), table_px=None, picker=None) -> list[dict]:
     """Wind up, grip the ball barely, swing, let go at the trigger; then where it came down (the overhead
     camera, or measured by hand with --manual). Every throw is logged as it happens."""
     plan, f = throw_plan(cfg, chain, target, catch_z)
@@ -514,14 +579,23 @@ async def throw(arm, gripper, overhead, table, cfg: TossCfg, chain: Chain, repea
     log: list[dict] = []
     try:
         for i in range(repeat):
-            await go_slowly(arm, chain, cfg, pose_at(spec, 0.0, plan.base_deg), say)
-            await set_mm(gripper, cfg, cfg.hold_mm + 15.0)
-            if ask(f"throw {i + 1}/{repeat}: hold the ball in the fingers, press Enter (s: stop) ").strip().lower() == "s":
-                break
-            await set_mm(gripper, cfg, cfg.hold_mm)
-            await asyncio.sleep(SETTLE_S)
-            if ask("let go of the ball; everyone clear of the throw? Enter: throw (s: stop) ").strip().lower() == "s":
-                break
+            if picker is not None:                           # the arm picks the ball up itself
+                if not await picker():
+                    say("no ball in the gripper: stopping")
+                    break
+                await go_slowly(arm, chain, cfg, pose_at(spec, 0.0, plan.base_deg), say,   # from the pick: opening up
+                                keep=dataclasses.replace(KeepOut.of(cfg), reach_mm=300.0))
+                if ask(f"throw {i + 1}/{repeat}: everyone clear of the throw? Enter: throw (s: stop) ").strip().lower() == "s":
+                    break
+            else:
+                await go_slowly(arm, chain, cfg, pose_at(spec, 0.0, plan.base_deg), say)
+                await set_mm(gripper, cfg, cfg.hold_mm + 15.0)
+                if ask(f"throw {i + 1}/{repeat}: hold the ball in the fingers, press Enter (s: stop) ").strip().lower() == "s":
+                    break
+                await set_mm(gripper, cfg, cfg.hold_mm)
+                await asyncio.sleep(SETTLE_S)
+                if ask("let go of the ball; everyone clear of the throw? Enter: throw (s: stop) ").strip().lower() == "s":
+                    break
 
             async def let_go(t_cmd, rec):
                 return await release(lambda: set_mm(gripper, cfg, cfg.release_mm), spec, prof, plan.trigger_progress_deg,
@@ -657,9 +731,12 @@ def parser() -> argparse.ArgumentParser:
             s.add_argument("--repeat", type=int, default=1)
         if name in ("throw", "catch"):
             s.add_argument("--manual", action="store_true", help="measure the landing by hand, not with the camera")
+            s.add_argument("--pick", action="store_true", help="the arm finds the ball on the table and picks it up")
         if name == "catch":
             s.add_argument("--teach", action="store_true", help="no motion: learn how armfarm03 holds the bowl")
             s.add_argument("--dry", action="store_true", help="move the bowl, don't throw")
+    s = sub.add_parser("pick")
+    s.add_argument("--yes", action="store_true", help="skip the 'type go' question")
     s = sub.add_parser("grip")
     s.add_argument("--teach", action="store_true")
     s.add_argument("--repeat", type=int, default=0)
@@ -731,9 +808,13 @@ async def main(argv: list[str] | None = None) -> None:
             await dry(arm, chain, cfg, args.repeat, args.scale, target)
         elif args.cmd == "grip":
             await grip(gripper, cfg, args.teach, args.repeat)
+        elif args.cmd == "pick":
+            await pick_ball(arm, gripper, thrower, chain, cfg, machines.component(tv, "VIAM_CAMERA", "cam"))
         elif args.cmd == "throw":
+            cam = machines.component(tv, "VIAM_CAMERA", "cam")
+            picker = (lambda: pick_ball(arm, gripper, thrower, chain, cfg, cam)) if args.pick else None
             await throw(arm, gripper, overhead, table, cfg, chain, args.repeat, args.manual, target, catch_z,
-                        radius_px=tuple(bcfg.ball_radius_px), table_px=table_px)
+                        radius_px=tuple(bcfg.ball_radius_px), table_px=table_px, picker=picker)
         elif args.cmd == "catch":
             catcher_arm = Arm.from_robot(catcher, machines.component(cv, "VIAM_ARM", "arm"))
             if args.teach:

@@ -218,3 +218,29 @@ def test_a_release_that_never_fires_keeps_the_ball_and_says_so(cfg):
     assert log[0]["released"] is False and any("never fired" in l for l in lines)
     assert world.gripper.calls[-1] == {"set": cfg.counts(cfg.hold_mm)}   # never told to open
     assert world.released == [] and world.arm.calls[-1][0] == "stop"
+
+
+def test_throw_with_pick_finds_the_ball_picks_it_and_throws(cfg, monkeypatch):
+    chain = load_real_chain()
+    real = TossCfg(kinematics="config/kinematics_armfarm05.urdf", start_deg=[4.2, -27.0, -57.0, 0.0, -59.0, 0.0],
+                   joints=[0, 1, 4], signs=[1, 1, 1], amplitude_deg=40.0, accel_deg_s2=1000.0, elevation_deg=45.0,
+                   throw_mm=219.0, min_throw_mm=200.0, hold_mm=46.0, speed_factor=1.0,
+                   walls=[[[711.0, -1500.0, -500.0], [811.0, 1500.0, 1100.0]], [[-1500.0, -1395.0, -500.0], [1500.0, -1295.0, 1100.0]]],
+                   ceiling_z_mm=1000.0, thrower_in_catcher={"x_mm": 0.0, "y_mm": -1905.0, "yaw_deg": 0.0})
+    world = World(FakeArm(q=[0.0, 0.0, -60.0, 0.0, -60.0, 0.0]))
+    looked = []
+
+    async def ball_on_table(machine, c, camera):
+        looked.append(camera)
+        return np.array([400.0, 50.0, 25.0])
+    monkeypatch.setattr(toss, "find_ball", ball_on_table)
+    picker = lambda: toss.pick_ball(world.arm, world.gripper, None, chain, real, "cam", say=quiet)
+    log = run(toss.throw(world.arm, world.gripper, None, TABLE, real, chain, manual=True, say=quiet, ask=lambda *_: "",
+                         picker=picker))
+    assert len(looked) == 2 and log and log[0].get("sent") is not None and world.released     # picked, then thrown
+    assert world.arm.calls[-1][0] == "stop"
+
+
+def load_real_chain():
+    from worldarm.toss.kinematics import load_chain
+    return load_chain("config/kinematics_armfarm05.urdf")

@@ -174,6 +174,8 @@ class FakeGripper:
 
     async def _drive(self, target, start_at):
         await asyncio.sleep(max(0.0, start_at - now()))
+        if self.holding_at is not None and target < self.holding_at:
+            target = self.holding_at                       # the ball is in the way
         while abs(self.mm - target) > 1e-6:
             await asyncio.sleep(0.002)
             step = self.speed * 0.002
@@ -189,7 +191,7 @@ class FakeGripper:
             target = float(cmd["set"]) / 850.0 * 84.0
             await asyncio.sleep(self.rtt / 2)
             if target < BALL_MM and self.holding_at is None:
-                self.holding_at = target           # closing on a (new) ball
+                self.holding_at = BALL_MM          # closing on a (new) ball: the fingers stop on it
                 if self.on_grip:
                     self.on_grip()
             if self._task and not self._task.done():

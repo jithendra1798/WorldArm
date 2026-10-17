@@ -88,3 +88,13 @@ def test_urdf_with_a_dangling_world_link_first_still_reads_the_whole_arm():
         <axis xyz="0 1 0"/><limit lower="-2" upper="2"/></joint></robot>"""
     chain = Chain.from_urdf(urdf)
     assert chain.n == 2 and np.allclose(chain.point([0.0, 0.0]), (400.0, 0.0, 300.0))
+
+
+def test_solve_down_reaches_a_point_with_the_gripper_pointing_down():
+    from worldarm.toss.kinematics import load_chain, solve_down
+    chain = load_chain("config/kinematics_armfarm05.urdf")          # armfarm05's own model
+    q = solve_down(chain, (380.0, 60.0, 300.0), [4.2, -27.0, -57.0, 0.0, -59.0, 0.0], (0.0, 0.0, 155.0))
+    assert q is not None
+    M, _ = chain.frames(q)
+    assert np.allclose((M @ np.r_[0.0, 0.0, 155.0, 1.0])[:3], (380.0, 60.0, 300.0), atol=1.0)
+    assert M[2, 2] < -0.999                                    # flange z axis straight down

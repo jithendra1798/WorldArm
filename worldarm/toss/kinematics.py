@@ -161,3 +161,29 @@ def load_chain(path_or_text: str, fmt: str | None = None) -> Chain:
                 text = f.read()
             fmt = "urdf" if path_or_text.endswith(".urdf") or text.lstrip().startswith("<") else "sva"
     return Chain.from_urdf(text) if fmt == "urdf" else Chain.from_sva(text)
+
+
+def solve_down(chain: Chain, xyz_mm, q0, tool_mm=(0.0, 0.0, 0.0), iters: int = 200) -> np.ndarray | None:
+    """Joint angles (deg) that put the tool point at xyz_mm with the gripper pointing straight down, starting from
+    q0 (the wrist roll stays free). Damped least squares on our own model; None if it doesn't get within 1 mm."""
+    target, down = np.asarray(xyz_mm, float), np.array([0.0, 0.0, -1.0])
+    lo, hi = np.array([l for l, _ in chain.limits_deg]), np.array([h for _, h in chain.limits_deg])
+    q = np.clip(np.asarray(q0, float), lo, hi)
+
+    def err(q):
+        M, _ = chain.frames(q)
+        p = (M @ np.r_[np.asarray(tool_mm, float), 1.0])[:3]
+        return np.r_[target - p, 300.0 * (down - M[:3, 2])]     # 300 mm per unit of pointing error
+
+    for _ in range(iters):
+        e = err(q)
+        if np.linalg.norm(e[:3]) < 1.0 and np.linalg.norm(e[3:]) < 0.3:
+            return q
+        J = np.empty((6, chain.n))
+        for i in range(chain.n):
+            dq = np.zeros(chain.n)
+            dq[i] = 0.01
+            J[:, i] = (e - err(q + dq)) / 0.01                    # d(position)/d(q): e falls as the tool moves on
+        step = J.T @ np.linalg.solve(J @ J.T + 25.0 * np.eye(6), e)
+        q = np.clip(q + np.clip(step, -5.0, 5.0), lo, hi)
+    return None
