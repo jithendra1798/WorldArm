@@ -619,7 +619,8 @@ async def line_to(arm, chain: Chain, cfg: TossCfg, gripper_xyz, keep: KeepOut, l
 async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: str = "cam", say=print) -> bool:
     """Find the ball from the scan poses, look again from straight above it, go down and close on it (67% of the
     travel), lift. True if the fingers stopped on the ball."""
-    reaching = dataclasses.replace(KeepOut.of(cfg), reach_mm=300.0)    # reaching down near the base folds it more
+    reaching = dataclasses.replace(KeepOut.of(cfg), reach_mm=300.0,     # reaching down near the base folds it more,
+                                   table_z_mm=cfg.pick_table_z_mm)       # and the real table top is what matters here
     near_table = dataclasses.replace(reaching, clearance_mm=cfg.pick_clearance_mm)
     tool = (0.0, 0.0, cfg.gripper_frame_mm)
     out = run_dir("pick")
