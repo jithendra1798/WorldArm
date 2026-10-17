@@ -234,6 +234,8 @@ def test_throw_with_pick_finds_the_ball_picks_it_and_throws(cfg, monkeypatch):
     looked = []
 
     async def ball_on_table(machine, camera, c, chain, q, save=None):     # what the wrist camera reports
+        if save is not None and save.name == "after-lift.jpg":
+            return []                                                      # lifted: gone from the table
         looked.append(camera)
         return [{"x": 400.0, "y": 300.0, "height": 45.0, "u": 640, "v": 360, "area": 3000, "darkness": 30.0}]
     monkeypatch.setattr(toss, "wrist_look", ball_on_table)

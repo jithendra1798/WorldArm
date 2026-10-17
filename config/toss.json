@@ -74,7 +74,7 @@
   "grasp_raise_mm": 10.0,
   "min_tcp_above_table_mm": 55.0,
   "pick_hover_mm": 100.0,
-  "close_pct": 60.0,
+  "close_pct": 55.0,
   "free_mm": 20.0,
   "jaw_s": 0.151,
   "pick_clearance_mm": 5.0,

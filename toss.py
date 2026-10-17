@@ -234,14 +234,24 @@ async def move_joints(arm, q) -> None:
     await arm.move_to_joint_positions(JointPositions(values=[float(v) for v in q]))
 
 
-async def go_slowly(arm, chain: Chain, cfg: TossCfg, q_to, say=print, keep: KeepOut | None = None) -> None:
-    """To q_to at the wind-up speed, if the whole way there is clear."""
+async def go_slowly(arm, chain: Chain, cfg: TossCfg, q_to, say=print, keep: KeepOut | None = None,
+                    where: str = "the next pose") -> None:
+    """To q_to at the wind-up speed, if the whole way there is clear; if not, by way of straight up first."""
+    keep = keep or KeepOut.of(cfg)
     q_now = await joints_of(arm)
     if float(np.max(np.abs(np.asarray(q_now) - np.asarray(q_to)))) < 0.2:
         return
-    why = motion_problem(chain, q_now, q_to, tuple(cfg.tool_mm), keep or KeepOut.of(cfg))
+    why = motion_problem(chain, q_now, q_to, tuple(cfg.tool_mm), keep)
     if why:
-        raise SystemExit(f"Refused: the way to the wind-up pose isn't clear: {why}. Move the arm nearer to it first.")
+        M, _ = chain.frames(q_now)
+        up = solve_down(chain, (M[0, 3], M[1, 3], 520.0), q_now, (0.0, 0.0, cfg.gripper_frame_mm))
+        if up is None or motion_problem(chain, q_now, up, tuple(cfg.tool_mm), keep) or \
+                motion_problem(chain, up, q_to, tuple(cfg.tool_mm), keep):
+            raise SystemExit(f"Refused: the way to {where} isn't clear: {why}, and not by way of straight up either. "
+                             "Move the arm nearer by hand (or in the Viam app) first.")
+        say(f"  (to {where} by way of straight up)")
+        await go_slowly(arm, chain, cfg, up, say, keep, "straight up")
+        q_now = up
     try:
         await arm.do_command({"clear_error": True})        # a stop the controller made (e.g. self-collision) blocks moves
     except Exception:
@@ -690,7 +700,7 @@ async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: s
             q = solve_down(chain, pose, await joints_of(arm), tool)
             if q is None:
                 continue
-            await go_slowly(arm, chain, cfg, q, say, keep=reaching)
+            await go_slowly(arm, chain, cfg, q, say, keep=reaching, where=f"scan pose {i + 1}")
             balls = [b for b in await wrist_look(machine, camera, cfg, chain, await joints_of(arm), out / f"scan{i + 1}.jpg")
                      if reachable(b["x"], b["y"])]
             say(f"scan {i + 1}: {len(balls)} ball(s)")
@@ -724,20 +734,18 @@ async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: s
         hover = max(cfg.pick_hover_mm, est["height"] + 40.0)
         await line_to(arm, chain, cfg, (est["x"], est["y"], gz + hover), reaching, "above the ball")
         await line_to(arm, chain, cfg, (est["x"], est["y"], gz), near_table, "down to the ball")
-        await gripper.do_command({"grab_with_torque": {"position": 0, "speed": int(cfg.grip_speed),
-                                                       "torque": int(cfg.grip_torque_pct)}})   # gently, until it stops
-        await asyncio.sleep(0.8)
+        await gripper.do_command({"set": float(close_pos)})  # Waj's close, lighter: ~38 mm on the 45 mm foam ball
+        await asyncio.sleep(0.6)
         pos = (await gripper.do_command({"get": True})).get("pos")
-        try:
-            held = bool((await gripper.is_holding_something()).is_holding_something)
-        except Exception:
-            held = False
         width = None if pos is None else cfg.mm(float(pos))
-        held = held or (width is not None and 15.0 <= width <= cfg.pick_ball_height_mm + 8.0)   # stopped on a ball
         await line_to(arm, chain, cfg, (est["x"], est["y"], max(gz + 150.0, 320.0)), near_table, "lift")
+        left = [b for b in await wrist_look(machine, camera, cfg, chain, await joints_of(arm), out / "after-lift.jpg")
+                if math.hypot(b["x"] - est["x"], b["y"] - est["y"]) < 40.0]
+        held = not left                                     # the camera decides: is the ball still lying there?
     finally:
         await safe_stop(arm)
-    say(f"fingers stopped at {width if width is None else round(width)} mm: {'holding the ball' if held else 'NO ball in the gripper'}")
+    say(f"fingers at {width if width is None else round(width)} mm; "
+        + ("the ball is gone from the table: holding it" if held else "the ball is still on the table: NOT picked"))
     if not held:
         await gripper.do_command({"set": float(cfg.full_open_counts)})
     return held
@@ -790,7 +798,7 @@ async def throw(arm, gripper, overhead, table, cfg: TossCfg, chain: Chain, repea
                     break
                 landed()
                 await go_slowly(arm, chain, cfg, pose_at(spec, 0.0, plan.base_deg), say,   # from the pick: opening up
-                                keep=dataclasses.replace(KeepOut.of(cfg), reach_mm=300.0))
+                                keep=dataclasses.replace(KeepOut.of(cfg), reach_mm=300.0), where="the wind-up pose")
                 if ask(f"throw {i + 1}/{repeat}: everyone clear of the throw? Enter: throw (s: stop) ").strip().lower() == "s":
                     break
             else:
