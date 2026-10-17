@@ -22,10 +22,12 @@ class KeepOut:
     base_radius_mm: float = 130.0     # the base column is always near the table: not checked against it
     ceiling_z_mm: float = 1300.0
     walls: list = field(default_factory=list)   # [[x0, y0, z0], [x1, y1, z1]] boxes
+    margin_mm: float = 120.0          # the arm is checked along its centre line: links, gripper and camera stick out
 
     @classmethod
     def of(cls, cfg) -> KeepOut:
-        return cls(cfg.table_z_mm, cfg.clearance_mm, cfg.base_radius_mm, cfg.ceiling_z_mm, list(cfg.walls))
+        return cls(cfg.table_z_mm, cfg.clearance_mm, cfg.base_radius_mm, cfg.ceiling_z_mm, list(cfg.walls),
+                   cfg.wall_margin_mm)
 
 
 def arm_points(chain: Chain, q_deg, tool_mm, per_link: int = 4) -> np.ndarray:
@@ -51,12 +53,12 @@ def pose_problem(chain: Chain, q_deg, tool_mm, keep: KeepOut) -> str | None:
     if low.any():
         z = float(pts[off_base, 2][low].min())
         return f"the arm comes within {z - keep.table_z_mm:.0f} mm of the table (needs {keep.clearance_mm:.0f})"
-    if (pts[:, 2] > keep.ceiling_z_mm).any():
-        return f"the arm goes above the ceiling limit {keep.ceiling_z_mm:.0f} mm"
+    if (pts[:, 2] > keep.ceiling_z_mm - keep.margin_mm).any():
+        return f"the arm comes within {keep.margin_mm:.0f} mm of the ceiling limit {keep.ceiling_z_mm:.0f} mm"
     for lo, hi in keep.walls:
-        inside = np.all((pts >= np.asarray(lo, float)) & (pts <= np.asarray(hi, float)), axis=1)
-        if inside.any():
-            return f"the arm enters the keep-out box {list(lo)}-{list(hi)}"
+        lo_m, hi_m = np.asarray(lo, float) - keep.margin_mm, np.asarray(hi, float) + keep.margin_mm
+        if np.all((pts >= lo_m) & (pts <= hi_m), axis=1).any():
+            return f"the arm comes within {keep.margin_mm:.0f} mm of the keep-out box {list(lo)}-{list(hi)}"
     return None
 
 

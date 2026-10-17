@@ -44,6 +44,7 @@ class TossCfg:
     base_radius_mm: float = 130.0           # the base column (always near the table) is not checked against it
     ceiling_z_mm: float = 1300.0
     walls: list = field(default_factory=list)   # boxes [[x0, y0, z0], [x1, y1, z1]] the arm must stay out of
+    wall_margin_mm: float = 120.0           # kept from walls and ceiling (the check follows the arm's centre line)
     # limits
     max_speed_deg_s: float = 180.0          # the plan uses the least that reaches; this is the most it may ask
     max_accel_deg_s2: float = 1100.0        # xArm850 joints: about 1145 deg/s^2 at most

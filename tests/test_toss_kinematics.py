@@ -77,3 +77,14 @@ def test_urdf_and_sva_agree():
     q = (25, 15, -35, 20)
     tool = (150.0, 0.0, 0.0)
     assert np.allclose(u.point(q, tool), planar_tip(q), atol=1e-6)
+
+
+def test_urdf_with_a_dangling_world_link_first_still_reads_the_whole_arm():
+    """armfarm05's own URDF lists an unconnected <link name="world"/> before the arm's base."""
+    urdf = """<robot name="r"><link name="world"/><link name="base"/><link name="l1"/><link name="l2"/>
+      <joint name="j1" type="revolute"><parent link="base"/><child link="l1"/><origin xyz="0 0 0.3"/>
+        <axis xyz="0 0 1"/><limit lower="-3.14" upper="3.14"/></joint>
+      <joint name="j2" type="revolute"><parent link="l1"/><child link="l2"/><origin xyz="0.4 0 0"/>
+        <axis xyz="0 1 0"/><limit lower="-2" upper="2"/></joint></robot>"""
+    chain = Chain.from_urdf(urdf)
+    assert chain.n == 2 and np.allclose(chain.point([0.0, 0.0]), (400.0, 0.0, 300.0))

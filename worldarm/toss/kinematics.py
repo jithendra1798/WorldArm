@@ -97,7 +97,8 @@ class Chain:
         joints = {j.get("name"): j for j in root.findall("joint")}
         by_parent = {j.find("parent").get("link"): j for j in joints.values()}
         child_links = {j.find("child").get("link") for j in joints.values()}
-        base = next(l.get("name") for l in root.findall("link") if l.get("name") not in child_links)
+        roots = [l.get("name") for l in root.findall("link") if l.get("name") not in child_links]
+        base = next((r for r in roots if r in by_parent), roots[0])   # not a dangling "world" link listed first
         steps, limits, cur = [], [], base
         while cur in by_parent:
             j = by_parent[cur]
