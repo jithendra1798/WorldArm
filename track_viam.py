@@ -36,7 +36,7 @@ async def main():
     cam = Camera.from_robot(machine, CAMERA_NAME)
     t0 = time.time()
     for i in range(30):
-        images, _ = await cam.get_images()
+        images, _ = await cam.get_images(filter_source_names=["color"])
         frame = decode_color(images[0].data)
         ball = find_ball(frame)
         print(f"frame {i}: {frame.shape[1]}x{frame.shape[0]}  ball={ball}")

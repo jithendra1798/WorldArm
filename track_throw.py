@@ -34,7 +34,7 @@ async def main():
     print("GO")
     rows, t0 = [], time.time()
     while time.time() - t0 < 5:
-        images, _ = await cam.get_images()
+        images, _ = await cam.get_images(filter_source_names=["color"])
         frame = decode_color(images[0].data)
         ball = find_ball(frame)
         t = time.time() - t0
@@ -56,4 +56,5 @@ async def main():
     plt.tight_layout(); plt.savefig("captures/throw.png")
     print("chart saved: captures/throw.png")
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
