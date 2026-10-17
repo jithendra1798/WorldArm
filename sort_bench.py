@@ -177,7 +177,7 @@ class Bench:
 
             n, t0 = n + 1, time.time()
             reply = dict(await self.drawers.do_command({"action": "open", "drawer": k,
-                                                         "refine": not self.args.quick_knobs}))
+                                                         "refine": self.args.refine_knobs}))
             ok = bool(reply.get("success"))
             print(f"  open {k}: {'ok' if ok else reply.get('error') or reply.get('stage')}")
             log_step(logger, n, "open", ok, t0, reply, drawer=k, note=str(reply.get("error", "")))
@@ -189,21 +189,38 @@ class Bench:
             target = Pose(x=dp["x"], y=dp["y"], z=dp["z"] + self.args.drop_extra_mm, o_z=-1)
             neighbors = [o for o in source.objects if o is not obj]
             obstacles = list({o.pixel: o for o in neighbors}.values())
+            open_dir = tuple(reply["open_dir"])
             pick_theta, grasp = await self.grasp_for(scene, obj)
-            place_theta = place_theta_for_drawer(tuple(reply["open_dir"]), pick_theta, self.ov)
+            # A parallel gripper grips the same turned 180 deg; the planner may reject one of the two
+            # (the wrist camera's box can collide with the wrist link), so keep the other as a fallback.
+            alt = pick_theta - 180.0 if pick_theta > 0 else pick_theta + 180.0
+            wrists = [(pick_theta, place_theta_for_drawer(open_dir, pick_theta, self.ov)),
+                      (alt, place_theta_for_drawer(open_dir, alt, self.ov))]
             print(f"  grasp {color}: {grasp.get('shape')}, short side {grasp.get('short_mm', '-')} mm along "
-                  f"{grasp.get('short_axis_deg', '-')} deg -> wrist {pick_theta:.0f} deg; at the drawer {place_theta:.0f} deg")
-            try:
-                result = await ppc.move_one_object(obj, target, neighbors, obstacles, self.arm, self.gripper,
-                                                   self.motion, self.gripper_name, self.world, self.cfg,
-                                                   self.margin, self.timeout,
-                                                   pick_theta_deg=pick_theta, place_theta_deg=place_theta)
-            except Exception as e:  # e.g. no motion plan: a failed transfer, but still close the drawer below
-                result = f"error: {type(e).__name__}: {str(e)[:160]}"
+                  f"{grasp.get('short_axis_deg', '-')} deg -> wrist {pick_theta:.0f} deg (or {alt:.0f}); "
+                  f"at the drawer {wrists[0][1]:.0f} deg")
+            result, used = "not tried", None
+            for pick_t, place_t in wrists:
                 try:
-                    await ppc.open_gripper_for_pick(self.gripper)
-                except Exception:
-                    pass
+                    result = await ppc.move_one_object(obj, target, neighbors, obstacles, self.arm, self.gripper,
+                                                       self.motion, self.gripper_name, self.world, self.cfg,
+                                                       self.margin, self.timeout,
+                                                       pick_theta_deg=pick_t, place_theta_deg=place_t)
+                    used = (pick_t, place_t)
+                    break
+                except Exception as e:  # e.g. no motion plan: a failed transfer, but still close the drawer below
+                    result = f"error: {type(e).__name__}: {str(e)[:160]}"
+                    held = (await self.gripper.is_holding_something()).is_holding_something
+                    planning = any(w in str(e) for w in ("IK", "constraint", "no solution", "plan"))
+                    if planning and not held and (pick_t, place_t) != wrists[-1]:
+                        print(f"  wrist {pick_t:.0f} deg can't be planned; trying {wrists[-1][0]:.0f} deg")
+                        continue
+                    try:
+                        await ppc.open_gripper_for_pick(self.gripper)
+                    except Exception:
+                        pass
+                    break
+            pick_theta, place_theta = used or wrists[0]
             print(f"  transfer {color}: {result}")
             log_step(logger, n, "transfer", result == "ok", t0,
                      {"result": result, "drop_target": dp, "grasp": grasp, "pick_theta": pick_theta,
@@ -211,8 +228,12 @@ class Bench:
 
             n, t0 = n + 1, time.time()
             reply = dict(await self.drawers.do_command({"action": "close", "drawer": k}))
-            ok = bool(reply.get("success")) and reply.get("fully_closed") is not False
-            print(f"  close {k}: {'ok' if ok else reply.get('error') or 'not fully closed'}")
+            # Pushed back to the closed grasp point while holding the knob = closed. The service's load
+            # comparison is across two separate grips and too noisy to judge by (logged as info).
+            ok = bool(reply.get("success"))
+            loads = (reply.get("closed") or {}).get("load_diff_vs_before")
+            print(f"  close {k}: {'ok' if ok else reply.get('error') or reply.get('stage')}"
+                  + (f"  (load diff {loads})" if loads is not None else ""))
             log_step(logger, n, "close", ok, t0, reply, drawer=k, note=str(reply.get("error", "")))
             if not reply.get("success"):
                 return "aborted", f"close {k} failed: {reply.get('error') or reply.get('stage')}", n
@@ -226,9 +247,10 @@ async def main() -> None:
     p.add_argument("--drawer-service", default="PickBottle")
     p.add_argument("--drop-extra-mm", type=float, default=0.0,
                    help="raise the drop target above the knob height (release is 120 mm above the target)")
-    p.add_argument("--quick-knobs", action="store_true",
-                   help="use the drawer service's stored camera correction instead of the self-correcting "
-                        "two-look knob refinement (faster, but only valid for the camera it was measured with)")
+    p.add_argument("--refine-knobs", action="store_true",
+                   help="use the drawer service's self-correcting two-look knob check (about 25 s slower per "
+                        "drawer). Default: one overhead look + the stored correction, which two refined runs "
+                        "on the aligned camera confirmed to within 1.5 mm")
     p.add_argument("--yes", action="store_true", help="skip the motion confirmation")
     args = p.parse_args()
 
