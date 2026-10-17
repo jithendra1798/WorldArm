@@ -58,6 +58,10 @@ Our entry for Viam's *Code That Moves* hackathon (NYC, Oct 16–17 2026).
 | `worldarm/`, `run_episode.py`, `try_skill.py`, `scoreboard.py` | World model, planner, episode loop, simulator, logging and scoreboard. `run_episode.py --fake` runs without an arm. |
 | `sort.py` | **Moves the arm.** Chapter 1 on armfarm03: sorts the blocks into the drawers, one color per drawer, from whatever state the drawers are in (shut, partly open, open, mixed). `--dry-run` only looks and decides. |
 | `drill.py` | One real test per piece of chapter 1: `check`, `view`, `scan`, `calibrate`, `touch`, `pick`, `drawer`, `drop`, `unload`, `policy` (PLAN.md, Stage 1). |
+| `ball.py` | **Moves the arm.** Chapter 2, rung B: the goalie that gets to where a rolled ball *will* cross its lane. One drill per piece: `check`, `lane`, `calibrate`, `lane-test`, `record`, `fit`, `goalie`, `report`, `sim` (PLAN.md, Stage 3). |
+| `ball_study.py` | Overnight simulation study for H4 and H5 (no robot, one process): `runs/<stamp>-ball-study/summary.md` and charts |
+| `worldarm/ball/` | The ball: detector (`detect.py`), camera-to-table map (`table.py`), rolling model and learned slowdown (`model.py`), tracker (`track.py`), the goalie (`intercept.py`), outcome judging (`session.py`), the robot loop (`live.py`), simulator (`sim.py`), H4 on held-out real rolls (`holdout.py`), the study (`study*.py`) |
+| `worldarm/toss/` | Chapter 2, rung C (in progress): throw physics (`physics.py`), the arm's kinematics read from Viam (`kinematics.py`), the swing planner (`swing.py`) |
 | `worldarm/cell/` | One arm's numbers (`config.py` + `config/armfarm03.json`), its hardware with safety checks (`rig.py`), the camera correction (`calibration.py`) |
 | `worldarm/see/` | Perception, no motion: table blocks, the organizer (drawer numbers, how far each is out), what's in open drawers (`scene.py`) |
 | `worldarm/act/` | Skills: grasp planning (`grasp_plan.py`), contact sensing (`watch.py`), `pick.py`, `place.py`, `drawer.py` |

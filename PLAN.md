@@ -131,8 +131,30 @@ Each rung is benchmarked before moving to the next.
 |---|---|---|---|
 | **A. Ball into a held drawer** | Arm 1 pulls a drawer to 75% and keeps holding the knob. Arm 2 drops or tosses the ball in from 20–30 cm away. The drawer closes. | The ball becomes an object in the belief: "ball in drawer 2". Then "where's the ball?" | Success rate; belief accuracy |
 | **B. Intercept a rolling ball** | A judge rolls the ball across the table; the catcher places a cup where the ball will be, before it arrives | A rolling model, with its slowdown learned from our rolls, predicts where and when. The catcher only commits to points it can reach in time. | Intercept rate, predicting vs. chasing the last seen position (N ≥ 20 each) |
-| **C. Toss into a placed bowl** | Arm 2 tosses with adjustable release settings; the overhead camera records the landing; a fitted model aims the next toss. Arm 1 puts the bowl at the predicted landing spot. | A learned toss model with uncertainty | Landing error vs. number of practice tosses; catch rate |
+| **C. Toss into a placed bowl** | armfarm05 throws: one synchronized swing, the ball held barely and released at 45° while the swing is at full speed (the acceleration is tuned so the release falls in the constant-speed part). First ~0.8 m into a large cloth-lined bowl, slow swings, until the landing is repeatable. Then arm 1 holds the bowl at the predicted landing spot. | Physics, no learning: the thrower's settings (joint speed, base angle) give the landing point, through three calibrated constants (speed factor, release delay, the transform between the arms). Change the thrower and the catcher moves itself. | Landing spread at one setting (repeatability); landing error vs. prediction; catch rate |
 | D. Stretch | Correcting during flight; tosses across the table | Only if staff allow higher speeds and the measured delays allow it | — |
+
+**Rung B, piece by piece** (`ball.py` on armfarm03; settings in `config/ball_armfarm03.json`, logs in `runs/`).
+A paddle in armfarm03's gripper defends a straight lane low over the table. The overhead camera tracks the
+ball, the rolling model predicts where and when it will cross the lane, and the paddle goes there. The
+camera also judges each roll: blocked, goal, or short. Commands that move ask "type go"; Ctrl-C stops the arm.
+
+| # | Command | Tests | Pass when |
+|---|---|---|---|
+| 1 | `python ball.py check` | overhead camera speed, ball found on the table, table outline (no motion) | ~20+ fps, ball found in nearly every frame |
+| 2 | `python ball.py lane --teach a`, then `--teach b` | the lane's two ends: the arm's pose at that moment, paddle in the gripper, low over the table (no motion) | both saved |
+| 3 | `python ball.py calibrate` | camera-to-table map: the arm sets the ball down on a grid | leave-one-out error < 5 mm |
+| 4 | `python ball.py lane-test` (ball off the table) | paddle speed, start and retarget delays, how straight it stays on the lane, lookalikes at both ends | saved, no lookalikes |
+| 5 | `python ball.py record --rolls 15` | people roll the ball across the field, not at the paddle; tracks saved (no motion) | 15 rolls |
+| 6 | `python ball.py fit` | the learned slowdown, and H4 on the recorded rolls (each predicted with the slowdown learned from the others) | learned arrival time clearly closer than constant velocity |
+| 7 | `python ball.py sim`, then `--realistic` | offline: rates expected with the measured lane, arm and slowdown | predict well above chase |
+| 8 | `python ball.py goalie --rolls 10 --mode predict --confirm`, then `--mode chase`, alternating to 20+ each | the demo, and the H5 baseline; `--confirm` lets the operator correct the camera's call | — |
+| 9 | `python ball.py report` | H5 with 95% intervals, the camera's agreement with the operator, H4 on real rolls | predict > chase |
+
+`--speed` is deg/s along the lane. The default, 30, is above the 15°/s cap in Rules: get the staff OK or pass
+`--speed 15`. Alternating predict and chase in blocks of 10 keeps the comparison fair if the rolls drift.
+The simulation behind the H4 and H5 slides runs with no robot: `caffeinate -i .venv/bin/python ball_study.py`
+(~50 min, one process), then the charts: `/opt/homebrew/bin/python3.14 ball_study.py --report-only runs/<stamp>-ball-study`.
 
 ## What we claim, and how we'll show it
 
