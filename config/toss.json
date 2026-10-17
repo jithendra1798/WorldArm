@@ -156,5 +156,5 @@
   "bowl_diameter_mm": 300.0,
   "bowl_hold": null,
   "catch_speed_deg_s": 20.0,
-  "pad_middle_mm": 45.0
+  "grip_depth_mm": 4.0
 }

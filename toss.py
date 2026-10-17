@@ -792,11 +792,11 @@ async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: s
         if not grab:
             return True
         cz = cfg.pick_table_z_mm + cfg.pick_ball_height_mm / 2.0   # it rests on the table: its middle is a radius up
-        gz = max(cz + cfg.pad_middle_mm,                    # the pads' middle on the ball's equator
-                 cfg.pick_table_z_mm + cfg.tcp_to_tip_mm + 5.0)   # the fingertips never closer than 5 mm to the table
+        gz = max(cz - cfg.grip_depth_mm + cfg.tcp_to_tip_mm,  # the fingertips just past the ball's equator: the
+                 cfg.pick_table_z_mm + cfg.tcp_to_tip_mm + 5.0)   # very ends hold it; never within 5 mm of the table
         hover = max(cfg.pick_hover_mm, est["height"] + 40.0)
-        say(f"3. going over it, then straight down: the finger pads' middle on its equator ({cz:.0f} mm up), "
-            f"fingertips {gz - cfg.tcp_to_tip_mm - cfg.pick_table_z_mm:.0f} mm above the table")
+        say(f"3. going over it, then straight down: fingertips {cfg.grip_depth_mm:.0f} mm past its middle "
+            f"({gz - cfg.tcp_to_tip_mm - cfg.pick_table_z_mm:.0f} mm above the table)")
         await line_to(arm, chain, cfg, (est["x"], est["y"], gz + hover), reaching, "above the ball")
         await line_to(arm, chain, cfg, (est["x"], est["y"], gz), near_table, "down to the ball")
         say(f"4. closing the fingers to {cfg.mm(close_pos):.0f} mm (as the gripper reads it) around it")
@@ -1115,6 +1115,7 @@ def parser() -> argparse.ArgumentParser:
         if name == "throw":
             s.add_argument("--hand", action="store_true", help="hand the ball to the gripper instead of it picking it up")
             s.add_argument("--hold-mm", type=float, help="grip: where the fingers stop, mm as the gripper reads it (bigger = looser)")
+            s.add_argument("--grip-depth", type=float, help="grip: fingertips this far below the ball's middle (mm; default 4)")
             s.add_argument("--measure", action="store_true", help="type where each throw landed")
             s.add_argument("--tcp-limit", type=float, default=1250.0,
                            help="the arm's tool speed cap (mm/s; it faults near 1300 at the flange)")
@@ -1132,6 +1133,7 @@ def parser() -> argparse.ArgumentParser:
     s = sub.add_parser("pick")
     s.add_argument("--yes", action="store_true", help="skip the 'type go' question")
     s.add_argument("--hold-mm", type=float, help="grip: where the fingers stop, mm as the gripper reads it (bigger = looser)")
+    s.add_argument("--grip-depth", type=float, help="grip: fingertips this far below the ball's middle (mm; default 4)")
     s = sub.add_parser("grip")
     s.add_argument("--teach", action="store_true")
     s.add_argument("--repeat", type=int, default=0)
@@ -1176,6 +1178,8 @@ async def main(argv: list[str] | None = None) -> None:
             cfg.elevation_deg = args.angle
         if args.hold_mm is not None:
             cfg.hold_mm = args.hold_mm
+        if args.grip_depth is not None:
+            cfg.grip_depth_mm = args.grip_depth
         if args.speed is not None:
             throw_at_speed(cfg, chain, args.speed, args.tcp_limit)
         else:
@@ -1215,6 +1219,8 @@ async def main(argv: list[str] | None = None) -> None:
         elif args.cmd == "pick":                                # find it, pick it, go to the throwing position
             if args.hold_mm is not None:
                 cfg.hold_mm = args.hold_mm
+            if getattr(args, "grip_depth", None) is not None:
+                cfg.grip_depth_mm = args.grip_depth
             if await pick_ball(arm, gripper, thrower, chain, cfg, machines.component(tv, "VIAM_CAMERA", "cam")):
                 fit_under_cap(cfg, chain, 1100.0, say=lambda *_: None)
                 plan, _ = throw_plan(cfg, chain)
@@ -1233,6 +1239,8 @@ async def main(argv: list[str] | None = None) -> None:
             picker = None if args.hand else (lambda: pick_ball(arm, gripper, thrower, chain, cfg, cam))
             if args.hold_mm is not None:
                 cfg.hold_mm = args.hold_mm
+            if getattr(args, "grip_depth", None) is not None:
+                cfg.grip_depth_mm = args.grip_depth
 
             async def fresh():
                 m, _ = await machines.connect(cfg.thrower_env, cfg.thrower)
@@ -1254,6 +1262,8 @@ async def main(argv: list[str] | None = None) -> None:
                 return await look_at_landing(arm, thrower, chain, cfg, cam, planned_xy)
             if args.hold_mm is not None:
                 cfg.hold_mm = args.hold_mm
+            if getattr(args, "grip_depth", None) is not None:
+                cfg.grip_depth_mm = args.grip_depth
             await throw(arm, gripper, overhead, table, cfg, chain, args.repeat, True, target, catch_z,
                         radius_px=tuple(bcfg.ball_radius_px), table_px=table_px, picker=picker,
                         ask=input if args.measure else (lambda *_: ""), looker=None if args.hand else looker)

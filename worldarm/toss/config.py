@@ -42,7 +42,7 @@ class TossCfg:
     pick_ball_height_mm: float = 45.0       # the foam ball, when depth reads it flat
     gripper_frame_mm: float = 105.0         # gripper frame below the flange
     tcp_to_tip_mm: float = 55.0
-    pad_middle_mm: float = 45.0             # the middle of the finger pads below the gripper frame (tips 55, pads ~20 long)
+    grip_depth_mm: float = 4.0              # the fingertips this far below the ball's middle: held at the tips, barely
     min_tcp_above_table_mm: float = 55.0
     pick_hover_mm: float = 100.0
     squeeze_mm: float = 2.0                 # the fingers close this far under the ball's size: barely holding it
