@@ -525,11 +525,14 @@ def detect_balls(bgr: np.ndarray, depth: np.ndarray, intr, cam_pos, cam_R, cfg: 
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)))
     n, lab, stats, _ = cv2.connectedComponentsWithStats(mask)
+    H, W = mask.shape
     found = []
     for i in range(1, n):
         x0, y0, w, h, area = (int(v) for v in stats[i])
         if not 400 <= area <= 25000 or max(h, w) / max(1, min(h, w)) > 1.8 or area / (h * w) < 0.5:
             continue
+        if x0 <= 1 or y0 <= 1 or x0 + w >= W - 1 or y0 + h >= H - cfg.pick_fingers_px:
+            continue                                       # cut off by the edge, or where the fingertips show
         region = lab[y0:y0 + h, x0:x0 + w] == i
         vals = val[y0:y0 + h, x0:x0 + w][region].astype(np.float32)
         if np.mean(vals < 70) < 0.3:
@@ -545,7 +548,11 @@ def detect_balls(bgr: np.ndarray, depth: np.ndarray, intr, cam_pos, cam_R, cfg: 
         ray = cam_R @ np.array([(u - intr.center_x_px) / intr.focal_x_px, (v - intr.center_y_px) / intr.focal_y_px, 1.0])
         if ray[2] > -0.1:
             continue
-        top = cam_pos + ray * float(np.median(d))
+        dist = float(np.median(d))
+        r_px = intr.focal_x_px * (cfg.pick_ball_height_mm / 2.0) / max(dist, 1.0)   # a ball's radius at that distance
+        if not 0.3 <= area / (math.pi * r_px * r_px) <= 3.0:
+            continue                                       # too small or too big to be the ball (a speck, a seam)
+        top = cam_pos + ray * dist
         height = top[2] - cfg.pick_table_z_mm
         if not -15 <= height <= 130:
             continue

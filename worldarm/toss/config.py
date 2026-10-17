@@ -48,6 +48,7 @@ class TossCfg:
     pick_hover_mm: float = 100.0
     close_pct: float = 67.0                 # close the fingers to this share of their travel on the ball (foam squeezes)
     pick_clearance_mm: float = 5.0          # table clearance for the last few cm down to the ball
+    pick_fingers_px: int = 110              # the bottom strip of the wrist image where the fingertips show
     # the swing: start pose and directions from `plan --design` (or edited by hand)
     start_deg: list | None = None           # wind-up pose, all joints
     joints: list = field(default_factory=lambda: [1, 2, 4])   # xArm: shoulder, elbow and wrist pitch (0-based)

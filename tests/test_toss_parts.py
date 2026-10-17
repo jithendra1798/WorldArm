@@ -139,8 +139,12 @@ def test_ball_finder_places_a_dark_ball_from_colour_and_depth():
     cv2.circle(bgr, (int(round(u)), int(round(v))), 40, (30, 30, 30), -1)
     depth = np.zeros((720, 1280), np.float32)
     cv2.circle(depth, (int(round(u)), int(round(v))), 40, float(np.linalg.norm(top - cam_pos)), -1)
+    cv2.circle(bgr, (600, 715), 18, (30, 30, 30), -1)                           # a fingertip at the bottom edge
+    cv2.circle(depth, (600, 715), 18, 300.0, -1)
+    cv2.circle(bgr, (200, 200), 9, (30, 30, 30), -1)                            # a dark speck on the table
+    cv2.circle(depth, (200, 200), 9, 620.0, -1)
     found = toss.detect_balls(bgr, depth, intr, cam_pos, cam_R, cfg)
-    assert len(found) == 1
+    assert len(found) == 1                                                      # only the ball
     assert found[0]["x"] == pytest.approx(430.0, abs=4.0) and found[0]["y"] == pytest.approx(270.0, abs=4.0)
     assert found[0]["height"] == pytest.approx(45.0, abs=6.0)
 
