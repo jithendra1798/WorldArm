@@ -648,9 +648,27 @@ def detect_balls(bgr: np.ndarray, depth: np.ndarray, intr, cam_pos, cam_R, cfg: 
         else:                                              # the depth saw its top: the centre is a radius below,
             cz = top[2] - cfg.pick_ball_height_mm / 2.0    # whatever the table's exact height
         c = cam_pos + ray * ((cz - cam_pos[2]) / ray[2])
+        table_z = _table_around(lab == i, depth, intr, cam_pos, cam_R)
         found.append({"x": float(c[0]), "y": float(c[1]), "cz": float(cz), "height": float(height), "u": round(u),
-                      "v": round(v), "area": area, "darkness": float(np.median(vals))})
+                      "v": round(v), "area": area, "darkness": float(np.median(vals)), "table_z": table_z})
     return sorted(found, key=lambda b: b["darkness"])
+
+
+def _table_around(blob: np.ndarray, depth: np.ndarray, intr, cam_pos, cam_R) -> float | None:
+    """The table's height right around a blob (mm): the depth of a ring of pixels 10-30 px out from it, back-projected,
+    the median height. None if the camera has no depth there."""
+    import cv2
+    m = blob.astype(np.uint8)
+    ring = (cv2.dilate(m, np.ones((61, 61), np.uint8)) > 0) & ~(cv2.dilate(m, np.ones((21, 21), np.uint8)) > 0) & (depth > 0)
+    vs, us = np.nonzero(ring)
+    if len(us) < 30:
+        return None
+    if len(us) > 3000:
+        pick = np.linspace(0, len(us) - 1, 3000).astype(int)
+        us, vs = us[pick], vs[pick]
+    rays = np.c_[(us - intr.center_x_px) / intr.focal_x_px, (vs - intr.center_y_px) / intr.focal_y_px, np.ones(len(us))]
+    z = cam_pos[2] + (rays @ cam_R.T)[:, 2] * depth[vs, us]
+    return float(np.median(z))
 
 
 async def wrist_look(machine, camera: str, cfg: TossCfg, chain: Chain, q, save: Path | None = None) -> list[dict]:
@@ -793,17 +811,21 @@ async def pick_ball(arm, gripper, machine, chain: Chain, cfg: TossCfg, camera: s
                     est = min(near, key=lambda b: math.hypot(b["x"] - est["x"], b["y"] - est["y"]))
             except SystemExit as e:
                 say(f"no close look ({e}); using the first fix")
-        say(f"2. the ball is at ({est['x']:.0f}, {est['y']:.0f}) mm, {est['height']:.0f} mm tall")
+        say(f"2. the ball is at ({est['x']:.0f}, {est['y']:.0f}) mm; the table there is at "
+            + (f"{est['table_z']:.0f} mm (measured)" if est.get("table_z") is not None else f"{cfg.pick_table_z_mm:.0f} mm (configured)"))
         if seen is not None:
             seen.append((est["x"], est["y"]))               # where it lay: the last throw's landing
         if not grab:
             return True
-        cz = cfg.pick_table_z_mm + cfg.pick_ball_height_mm / 2.0   # it rests on the table: its middle is a radius up
+        table_here = est.get("table_z")
+        if table_here is None or abs(table_here - cfg.pick_table_z_mm) > 30.0:
+            table_here = cfg.pick_table_z_mm                # no depth around it (or nonsense): the configured table
+        cz = table_here + cfg.pick_ball_height_mm / 2.0      # it rests on the table: its middle is a radius up
         gz = max(cz - cfg.grip_depth_mm + cfg.tcp_to_tip_mm,  # the fingertips just past the ball's equator: the
-                 cfg.pick_table_z_mm + cfg.tcp_to_tip_mm + 5.0)   # very ends hold it; never within 5 mm of the table
+                 table_here + cfg.tcp_to_tip_mm + 5.0)       # very ends hold it; never within 5 mm of the table
         hover = max(cfg.pick_hover_mm, est["height"] + 40.0)
         say(f"3. going over it, then straight down: fingertips {cfg.grip_depth_mm:.0f} mm past its middle "
-            f"({gz - cfg.tcp_to_tip_mm - cfg.pick_table_z_mm:.0f} mm above the table)")
+            f"({gz - cfg.tcp_to_tip_mm - table_here:.0f} mm above the table)")
         await line_to(arm, chain, cfg, (est["x"], est["y"], gz + hover), reaching, "above the ball")
         await line_to(arm, chain, cfg, (est["x"], est["y"], gz), near_table, "down to the ball")
         say(f"4. closing the fingers to {cfg.mm(close_pos):.0f} mm (as the gripper reads it) around it")

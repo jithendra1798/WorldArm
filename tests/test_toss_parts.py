@@ -137,7 +137,7 @@ def test_ball_finder_places_a_dark_ball_from_colour_and_depth():
     v = 360.0 + 907.0 * -(top[1] - cam_pos[1]) / (cam_pos[2] - top[2])
     bgr = np.full((720, 1280, 3), 200, np.uint8)
     cv2.circle(bgr, (int(round(u)), int(round(v))), 40, (30, 30, 30), -1)
-    depth = np.zeros((720, 1280), np.float32)
+    depth = np.full((720, 1280), cam_pos[2] - cfg.pick_table_z_mm, np.float32)    # the table, straight below
     cv2.circle(depth, (int(round(u)), int(round(v))), 40, float(np.linalg.norm(top - cam_pos)), -1)
     cv2.circle(bgr, (600, 715), 18, (30, 30, 30), -1)                           # a fingertip, cut off at the bottom edge
     cv2.circle(depth, (600, 715), 18, 300.0, -1)
@@ -149,6 +149,7 @@ def test_ball_finder_places_a_dark_ball_from_colour_and_depth():
     assert len(found) == 1                                                      # only the ball
     assert found[0]["x"] == pytest.approx(430.0, abs=4.0) and found[0]["y"] == pytest.approx(270.0, abs=4.0)
     assert found[0]["height"] == pytest.approx(45.0, abs=6.0)
+    assert found[0]["table_z"] == pytest.approx(cfg.pick_table_z_mm, abs=1.0)   # the table measured around it
 
 
 def test_taught_throw_plan_keeps_every_limit_and_releases_near_peak_speed():
