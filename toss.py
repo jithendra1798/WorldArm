@@ -149,6 +149,24 @@ def flange_per_deg(chain: Chain, cfg: TossCfg, plan: ThrowPlan) -> float:
                np.linspace(0.0, spec.amplitude_deg, 41))
 
 
+def throw_at_speed(cfg: TossCfg, chain: Chain, speed_deg_s: float, tcp_limit: float, say=print) -> None:
+    """Set the throw (cfg.throw_mm) to what this swing speed throws; refuse it past the tool-speed cap."""
+    lo, hi = 50.0, 3000.0
+    for _ in range(30):
+        cfg.throw_mm = 0.5 * (lo + hi)
+        plan, _ = throw_plan(cfg, chain)
+        lo, hi = (cfg.throw_mm, hi) if plan.ok and plan.speed_deg_s <= speed_deg_s else (lo, cfg.throw_mm)
+    cfg.throw_mm = lo
+    plan, _ = throw_plan(cfg, chain)
+    if not plan.ok:
+        raise SystemExit(f"No throw at {speed_deg_s:.0f} deg/s: {plan.reason}")
+    flange = plan.speed_deg_s * flange_per_deg(chain, cfg, plan)
+    if flange > tcp_limit:
+        raise SystemExit(f"{speed_deg_s:.0f} deg/s moves the flange at {flange:.0f} mm/s, over the cap {tcp_limit:.0f}: "
+                         "pass --tcp-limit higher to try it (the arm stops itself if it can't, keeping the ball)")
+    say(f"at {plan.speed_deg_s:.0f} deg/s the ball flies {lo:.0f} mm (flange {flange:.0f} mm/s)")
+
+
 def fit_under_cap(cfg: TossCfg, chain: Chain, tcp_limit: float, say=print) -> None:
     """Shorten the throw (cfg.throw_mm) until the swing it needs keeps the flange under tcp_limit."""
     plan, _ = throw_plan(cfg, chain)
@@ -1070,6 +1088,7 @@ def parser() -> argparse.ArgumentParser:
             s.add_argument("--hold-mm", type=float, help="grip: where the fingers stop, mm as the gripper reads it (bigger = looser)")
             s.add_argument("--measure", action="store_true", help="type where each throw landed")
             s.add_argument("--tcp-limit", type=float, default=1100.0, help="the arm's tool speed cap (mm/s)")
+            s.add_argument("--speed", type=float, help="swing speed (deg/s); the ball flies as far as that throws it")
             s.add_argument("--release-shift", type=float, default=0.0, help="release this long after peak speed (s)")
             s.add_argument("--flick", action="store_true", help="Waj's wrist snap: the ball faster than the arm's cap")
             s.add_argument("--taught", action="store_true", help="Waj's taught throw instead of our swing")
@@ -1195,7 +1214,10 @@ async def main(argv: list[str] | None = None) -> None:
                 return await look_at_landing(arm, thrower, chain, cfg, cam, planned_xy)
             if args.hold_mm is not None:
                 cfg.hold_mm = args.hold_mm
-            fit_under_cap(cfg, chain, args.tcp_limit)
+            if args.speed is not None:
+                throw_at_speed(cfg, chain, args.speed, args.tcp_limit)
+            else:
+                fit_under_cap(cfg, chain, args.tcp_limit)
             await throw(arm, gripper, overhead, table, cfg, chain, args.repeat, True, target, catch_z,
                         radius_px=tuple(bcfg.ball_radius_px), table_px=table_px, picker=picker,
                         ask=input if args.measure else (lambda *_: ""), looker=None if args.hand else looker)

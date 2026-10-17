@@ -140,8 +140,8 @@
     900.0
   ],
   "catch_z_mm": 25.0,
-  "min_throw_mm": 200.0,
-  "throw_mm": 287.0873227715492,
+  "min_throw_mm": 100.0,
+  "throw_mm": 400.0,
   "heading_deg": null,
   "clear_base_mm": 250.0,
   "speed_factor": 0.947,
