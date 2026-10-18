@@ -12,6 +12,10 @@
   stop                        nothing on the table and every drawer seen and single-colored (sorted);
                               or nothing more can be done (organizer not in view, no free drawer,
                               blocks or drawers that keep failing)
+  drawer 3 stays free         with up to two colors, the colors go into drawers 1 and 2 only; drawer 3
+                              is never given a color, anything already in it is taken out (and sorted
+                              into 1 and 2), and once everything is sorted it is opened and left open.
+                              Three colors need every drawer: then every drawer ends shut, as before
 """
 
 from __future__ import annotations
@@ -63,18 +67,28 @@ def decide(b: SortBelief) -> Action:
     counts = Counter(blk.color for blk in table)
     opened = [d for d in drawers if d.state in ("open", "partial")]
 
+    spare = _spare_drawer(b, drawers, counts)
+
     def home(color: str, other_than: int | None = None) -> DrawerBelief | None:
         for d in drawers:
+            if d is spare:
+                continue                             # drawer 3 is never anyone's home
             if d.index != other_than and d.known and color in d.colors and (d.pure or d.keep_color(counts) == color):
                 return d
         return None
 
     def has_work(d: DrawerBelief) -> bool:
+        if d is spare:
+            return d.known and not d.empty           # only taking blocks out of it
         if not d.known or d.mixed:
             return True
         if d.pure:
             return counts[d.color] > 0
         return any(home(c, d.index) is None for c in counts)
+
+    def rest_sorted(skip: DrawerBelief) -> bool:
+        """Every other drawer looked into and single-colored (or empty), nothing stuck."""
+        return all(d.known and not d.mixed and not b.drawer_stuck(d.index) for d in drawers if d is not skip)
 
     if len(opened) > 1:
         keep = next((d for d in opened if has_work(d) and not b.drawer_stuck(d.index)), opened[0])
@@ -89,6 +103,19 @@ def decide(b: SortBelief) -> Action:
             return Action("open", d.index, reason=f"partly open ({d.opening_mm or 0:.0f} mm): pull it out to look in and drop")
         if not d.known:
             return stop(f"drawer {d.index} is open but the camera can't see inside it", False)
+        if spare is not None and d is spare and not d.empty:
+            out = [blk for blk in d.blocks if not b.gave_up(blk)]
+            if out:
+                blk = max(out, key=lambda x: _toward_front(x, b))
+                return Action("unload", d.index, blk, blk.color,
+                              f"drawer {d.index} stays free: taking {blk.color} out (it goes into drawer 1 or 2)")
+            return Action("close", d.index, reason=f"drawer {d.index}'s blocks can't be picked out")
+        if spare is not None and d is spare and d.empty:
+            if not counts and rest_sorted(d):
+                return stop(f"sorted into drawers 1 and 2; drawer {d.index} is left open", True)
+            if counts or not rest_sorted(d):
+                return Action("close", d.index, reason=f"drawer {d.index} stays free: the colors go into the first "
+                                                       "drawers; it is opened again at the end")
         if d.mixed:
             keep = d.keep_color(counts)
             out = [blk for blk in d.blocks if blk.color != keep and not b.gave_up(blk)]
@@ -118,7 +145,10 @@ def decide(b: SortBelief) -> Action:
                           f"drawer {d.index} is empty; {c} has no drawer yet ({counts[c]} on the table)")
         return Action("close", d.index, reason="empty, and every color on the table already has a drawer")
 
-    mixed = [d for d in usable if d.mixed and any(not b.gave_up(x) for x in d.blocks)]
+    if spare is not None and spare.known and not spare.empty and any(not b.gave_up(x) for x in spare.blocks):
+        return Action("open", spare.index, reason=f"drawer {spare.index} stays free: its {_fmt(spare.contents)} "
+                                                  "come out first")
+    mixed = [d for d in usable if d.mixed and d is not spare and any(not b.gave_up(x) for x in d.blocks)]
     if mixed:
         return Action("open", mixed[0].index, reason=f"it has mixed colors ({_fmt(mixed[0].contents)}): fix it")
     for c in sorted(counts, key=lambda c: (-counts[c], c)):
@@ -126,10 +156,12 @@ def decide(b: SortBelief) -> Action:
         if h is not None and h in usable:
             return Action("open", h.index, reason=f"{counts[c]} {c} on the table; drawer {h.index} holds {c}")
     unseen = [d for d in usable if not d.known]
+    if spare is not None and counts and unseen and unseen[0] is spare and len(unseen) == 1:
+        unseen = []                      # the spare can wait: it's opened (and looked into) at the end
     if unseen:
         return Action("open", unseen[0].index, reason="haven't looked inside it yet")
     if counts:
-        empty = [d for d in usable if d.empty]
+        empty = [d for d in usable if d.empty and d is not spare]
         if empty:
             c = sorted(counts, key=lambda c: (-counts[c], c))[0]
             return Action("open", empty[0].index, reason=f"{c} has no drawer; drawer {empty[0].index} is empty")
@@ -142,7 +174,30 @@ def decide(b: SortBelief) -> Action:
                ([f"drawer(s) {still_mixed} still mixed"] if still_mixed else []) + \
                ([f"drawer(s) {stuck} won't move"] if stuck else [])
         return stop("; ".join(bits), False)
+    if spare is not None and spare.state == "closed":
+        return Action("open", spare.index, reason=f"sorted into drawers 1 and 2; drawer {spare.index} is left open")
     return stop("sorted: nothing left on the table and every drawer holds one color", True)
+
+
+def _colors_in_play(b: SortBelief, drawers: list[DrawerBelief], counts: Counter) -> set[str]:
+    """Every color the task has to give a drawer: on the table, or already in a drawer."""
+    colors = set(counts)
+    for d in drawers:
+        if d.known and not d.empty:
+            colors |= d.colors
+    return colors
+
+
+def _spare_drawer(b: SortBelief, drawers: list[DrawerBelief], counts: Counter) -> DrawerBelief | None:
+    """The last drawer (drawer 3), kept free: never given a color, emptied if it holds anything, and left
+    open at the end. None when the colors need every drawer (three colors), or the other drawers can't
+    take them (one stuck)."""
+    spare = drawers[-1]
+    colors = _colors_in_play(b, drawers, counts)
+    others = [d for d in drawers[:-1] if not b.drawer_stuck(d.index)]
+    if b.drawer_stuck(spare.index) or len(colors) > len(others):
+        return None
+    return spare
 
 
 def _fmt(c: Counter | None) -> str:

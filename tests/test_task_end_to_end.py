@@ -26,9 +26,16 @@ def run(world, **kw):
 
 
 def sorted_world(world):
+    """Table clear, every drawer single-colored; with up to two colors they're in drawers 1 and 2 and
+    drawer 3 is left open and empty; with three colors every drawer ends shut."""
     drawers = world.drawer_colors()
-    return (not world.table_colors() and all(o < 12 for o in world.openings)
-            and all(len(set(c)) <= 1 for c in drawers.values()))
+    colors = {c for cs in drawers.values() for c in cs}
+    n = len(world.openings)
+    if world.table_colors() or not all(len(set(c)) <= 1 for c in drawers.values()):
+        return False
+    if len(colors) <= n - 1:
+        return all(o < 12 for o in world.openings[:-1]) and world.openings[-1] > 60 and not drawers[n - 1]
+    return all(o < 12 for o in world.openings)
 
 
 def test_pick_and_drop_into_an_open_drawer():

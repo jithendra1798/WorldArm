@@ -117,7 +117,8 @@ def test_no_free_drawer_for_a_color_stops_unsorted():
 
 
 def test_all_seen_single_colored_and_table_clear_is_sorted():
-    a = decide(belief(contents=(["yellow", "yellow"], ["green"], [])))
+    # three colors use every drawer (two colors leave drawer 3 open: see the tests at the end)
+    a = decide(belief(contents=(["yellow", "yellow"], ["green"], ["black"])))
     assert a.kind == "stop" and a.success is True
 
 
@@ -139,3 +140,64 @@ def test_a_drawer_that_keeps_failing_is_skipped():
     b.drawer_fails[2] = CFG.task.max_tries_per_drawer_move
     a = decide(b)
     assert a.kind == "open" and a.drawer == 3   # empty drawer 3 instead of the stuck, unseen drawer 2
+
+
+# ---- two colors, three drawers: the colors fill drawers 1 and 2, drawer 3 ends open ----
+def test_two_colors_first_color_goes_to_drawer_1():
+    a = decide(belief(table=["yellow", "green", "yellow"]))
+    assert a.kind == "open" and a.drawer == 1
+
+
+def test_two_colors_second_color_goes_to_drawer_2_not_3():
+    a = decide(belief(contents=(["yellow"], [], []), table=["green"]))
+    assert a.kind == "open" and a.drawer == 2
+
+
+def test_two_colors_open_empty_drawer_3_is_closed_while_blocks_remain():
+    a = decide(belief(states=("closed", "closed", "open"), contents=(["yellow"], [], []), table=["green"]))
+    assert a.kind == "close" and a.drawer == 3
+
+
+def test_two_colors_sorted_opens_drawer_3_and_leaves_it_open():
+    a = decide(belief(contents=(["yellow", "yellow"], ["green"], [])))
+    assert a.kind == "open" and a.drawer == 3
+    a = decide(belief(states=("closed", "closed", "open"), contents=(["yellow", "yellow"], ["green"], [])))
+    assert a.kind == "stop" and a.success is True and "drawer 3 is left open" in a.reason
+
+
+def test_two_colors_unseen_drawer_3_is_looked_into_last():
+    a = decide(belief(contents=(["yellow"], ["green"], None), table=["green"]))
+    assert a.kind == "open" and a.drawer == 2
+    a = decide(belief(contents=(["yellow"], ["green"], None)))
+    assert a.kind == "open" and a.drawer == 3
+
+
+def test_three_colors_use_every_drawer_and_end_shut():
+    a = decide(belief(contents=(["yellow"], ["green"], ["black"])))
+    assert a.kind == "stop" and a.success is True
+
+
+# ---- drawer 3 always stays free (up to two colors) ----
+def test_one_color_also_leaves_drawer_3_open_at_the_end():
+    a = decide(belief(contents=(["black"], [], [])))
+    assert a.kind == "open" and a.drawer == 3
+    a = decide(belief(states=("closed", "closed", "open"), contents=(["black"], [], [])))
+    assert a.kind == "stop" and a.success is True and "drawer 3 is left open" in a.reason
+
+
+def test_blocks_already_in_drawer_3_are_taken_out():
+    # the 15:55 run: drawer 3 held a black block from before, so it was treated as black's drawer
+    a = decide(belief(contents=(["black"], [], ["black"])))
+    assert a.kind == "open" and a.drawer == 3 and "come out" in a.reason
+    a = decide(belief(states=("closed", "closed", "open"), contents=(["black"], [], ["black"])))
+    assert a.kind == "unload" and a.drawer == 3 and a.color == "black"
+
+
+def test_a_color_only_in_drawer_3_still_gets_drawer_1_or_2():
+    a = decide(belief(states=("open", "closed", "closed"), contents=([], [], ["yellow"]), table=["black"]))
+    assert a.kind == "transfer" and a.drawer == 1 and a.color == "black"
+
+
+def test_drawer_3_is_never_a_home_for_the_table_color():
+    a = decide(belief(contents=([], [], ["black"]), table=["black"]))
+    assert not (a.kind == "open" and a.drawer == 3 and "holds black" in a.reason)
